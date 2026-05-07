@@ -1,0 +1,21 @@
+name = "cricket-sim"
+main = "src/worker/index.ts"
+compatibility_date = "2024-04-05"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cricket-sim-db"
+database_id = "57283a8a-1d79-4057-98c1-5394d2546fc0"
+
+[[durable_objects.bindings]]
+name = "SESSION_DO"
+class_name = "SessionDurableObject"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SessionDurableObject"]
+

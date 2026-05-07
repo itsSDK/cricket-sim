@@ -1,0 +1,30 @@
+{
+  "name": "cricket-sim",
+  "version": "1.0.0",
+  "description": "Cricket Training Simulation MVP",
+  "main": "src/worker/index.ts",
+  "scripts": {
+    "dev:frontend": "vite",
+    "build:frontend": "tsc && vite build",
+    "dev:backend": "wrangler dev",
+    "dev": "npm run build:frontend && npm run dev:backend",
+    "deploy": "npm run build:frontend && wrangler deploy"
+  },
+  "dependencies": {
+    "nanoid": "^5.1.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260316.1",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "autoprefixer": "^10.4.27",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "wrangler": "^4.73.0"
+  }
+}

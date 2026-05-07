@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   BattingHandedness,
   Position,
@@ -6,6 +7,7 @@ import {
   SessionState,
 } from '../../shared/types';
 import { WebSocketService } from '../services/WebSocketService';
+import { useAuth } from '../contexts/AuthContext';
 
 interface CoachViewProps {
   sessionId: string;
@@ -46,19 +48,13 @@ const RUN_OPTIONS = [
   { label: 'Triple', value: 3, tone: 'bg-amber-700 hover:bg-amber-600' },
   { label: 'Four', value: 4, tone: 'bg-orange-700 hover:bg-orange-600' },
   { label: 'Six', value: 6, tone: 'bg-rose-700 hover:bg-rose-600' },
-];
-
-const WAGON_WHEEL_RUN_OPTIONS = [
-  { label: '1 Run', value: 1, tone: 'bg-emerald-700 hover:bg-emerald-600' },
-  { label: '2 Runs', value: 2, tone: 'bg-emerald-600 hover:bg-emerald-500' },
-  { label: '3 Runs', value: 3, tone: 'bg-lime-700 hover:bg-lime-600' },
-  { label: '4 Runs', value: 4, tone: 'bg-amber-600 hover:bg-amber-500' },
-  { label: '6 Runs', value: 6, tone: 'bg-orange-600 hover:bg-orange-500' },
   { label: 'Wide (+1)', value: 1, tone: 'bg-purple-700 hover:bg-purple-600', isExtra: true },
   { label: 'No ball (+1)', value: 1, tone: 'bg-pink-700 hover:bg-pink-600', isExtra: true },
   { label: '-5 Runs', value: -5, tone: 'bg-red-700 hover:bg-red-600' },
   { label: '-10 Runs', value: -10, tone: 'bg-rose-800 hover:bg-rose-700' },
 ];
+
+const WAGON_WHEEL_RUN_OPTIONS = RUN_OPTIONS;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -145,7 +141,9 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
   const [state, setState] = useState<SessionState | null>(null);
   const [connected, setConnected] = useState(false);
   const [boardMode, setBoardMode] = useState<CoachBoardMode>('2d');
+  const [showQR, setShowQR] = useState(false);
   const fieldRef = useRef<HTMLDivElement | null>(null);
+  const { token, logout } = useAuth();
 
   const [editingSliceIdx, setEditingSliceIdx] = useState<number | null>(null);
   const [editingSliceIsOuter, setEditingSliceIsOuter] = useState<boolean>(false);
@@ -159,6 +157,7 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
 
   const [activeHandedness, setActiveHandedness] =
     useState<BattingHandedness>('right');
+  const [pendingHandedness, setPendingHandedness] = useState<BattingHandedness | null>(null);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [drawnPaths, setDrawnPaths] = useState<{ x: number; y: number }[][]>([]);
   const [currentPath, setCurrentPath] = useState<{ x: number; y: number }[] | null>(null);
@@ -177,7 +176,7 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
   });
 
   useEffect(() => {
-    const wsService = new WebSocketService(sessionId, 'coach');
+    const wsService = new WebSocketService(sessionId, 'coach', token || undefined);
 
     const unsubscribe = wsService.onMessage((msg: ServerMessage) => {
       setConnected(true);
@@ -299,12 +298,14 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
       clearInterval(pingTimer);
       wsService.disconnect();
     };
-  }, [sessionId]);
+  }, [sessionId, token]);
 
   useEffect(() => {
     const syncTitle = async () => {
       try {
-        const res = await fetch(`/api/sessions/${sessionId}`);
+        const res = await fetch(`/api/sessions/${sessionId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
         const data = (await res.json()) as SessionApiResponse;
         if (data.session?.title) {
           setState((prev) =>
@@ -324,7 +325,7 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [sessionId]);
+  }, [sessionId, token]);
 
   const currentDraft = useMemo(
     () => normalizePositions(draftLayouts[activeHandedness], activeHandedness),
@@ -341,22 +342,49 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
     showActionMessage(`${callName} Recorded`);
   };
 
-  const publishField = () => {
-    ws?.send({
-      type: 'PUBLISH_FIELD',
-      handedness: activeHandedness,
-      positions: currentDraft,
-    });
-    ws?.send({
-      type: 'UPDATE_DRAWING',
-      paths: drawnPaths,
-    });
-    showActionMessage('Field & Drawings published');
+  // Auto-publish current draft using a debounce timeout
+  useEffect(() => {
+    if (!ws || !connected) return;
+    const timeout = setTimeout(() => {
+      ws.send({
+        type: 'PUBLISH_FIELD',
+        handedness: activeHandedness,
+        positions: currentDraft,
+      });
+    }, 1500); // 1.5s debounce to suppress highlight jitter during active setup
+    return () => clearTimeout(timeout);
+  }, [currentDraft, activeHandedness, connected, ws]);
+
+  const switchHandedness = (newHandedness: BattingHandedness) => {
+    if (newHandedness === activeHandedness) return;
+    setPendingHandedness(newHandedness);
   };
 
-  const switchHandedness = (handedness: BattingHandedness) => {
-    setActiveHandedness(handedness);
-    ws?.send({ type: 'SET_ACTIVE_HANDEDNESS', handedness });
+  const handleHandednessConfirm = (mirror: boolean) => {
+    if (!pendingHandedness) return;
+    
+    if (mirror) {
+      let nextDrafts = { ...draftLayouts };
+      const mirrored = currentDraft.map((pos) => {
+        if (pos.id === 'bowler') return { ...pos };
+        return {
+          ...pos,
+          nx: clamp(1 - pos.nx, 0.08, 0.92),
+        };
+      });
+      nextDrafts[pendingHandedness] = mirrored;
+      setDraftLayouts(nextDrafts);
+      
+      ws?.send({
+        type: 'PUBLISH_FIELD',
+        handedness: pendingHandedness,
+        positions: mirrored,
+      });
+    }
+
+    setActiveHandedness(pendingHandedness);
+    ws?.send({ type: 'SET_ACTIVE_HANDEDNESS', handedness: pendingHandedness });
+    setPendingHandedness(null);
   };
 
 
@@ -449,10 +477,48 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
 
   return (
     <div className="min-h-dvh bg-slate-950 text-white">
+      {pendingHandedness && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-[24px] bg-slate-800 p-8 shadow-2xl border border-white/10">
+             <div className="flex justify-center mb-6">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-500/20 text-blue-400">
+                   <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                   </svg>
+                </div>
+             </div>
+             <h3 className="mb-8 text-xl font-bold text-white text-center">
+               Would you like the same field for the {pendingHandedness === 'right' ? 'Right-hand' : 'Left-hand'} batter?
+             </h3>
+             <div className="flex gap-4">
+               <button
+                 onClick={() => handleHandednessConfirm(true)}
+                 className="flex-1 rounded-xl bg-blue-600 py-3.5 font-bold text-white hover:bg-blue-500 transition-colors"
+               >
+                 Yes
+               </button>
+               <button
+                 onClick={() => handleHandednessConfirm(false)}
+                 className="flex-1 rounded-xl bg-slate-700 py-3.5 font-bold text-white hover:bg-slate-600 transition-colors"
+               >
+                 No
+               </button>
+             </div>
+          </div>
+        </div>
+      )}
       <div className="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/95 px-4 py-3 backdrop-blur">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-xl font-bold sm:text-2xl">{title}</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold sm:text-2xl">{title}</h1>
+              <button 
+                onClick={logout}
+                className="text-xs font-semibold text-slate-400 hover:text-white"
+              >
+                Sign Out
+              </button>
+            </div>
             <p className="text-sm text-slate-400">Session ID: {sessionId}</p>
           </div>
 
@@ -481,6 +547,13 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
             >
               {connected ? 'Live' : 'Disconnected'}
             </span>
+
+            <button
+              onClick={() => setShowQR(true)}
+              className="rounded-xl bg-pink-600 px-4 py-3 text-sm font-semibold hover:bg-pink-500 shadow-lg shadow-pink-500/20 transition hover:shadow-pink-500/40"
+            >
+              📱 Pair Display
+            </button>
 
             <button
               onClick={goToDisplayView}
@@ -658,7 +731,7 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
                       <button 
                         onClick={() => setIsDrawingMode(!isDrawingMode)}
                         className={`ml-2 px-2 py-0.5 rounded text-[11px] font-bold uppercase transition-colors ${
-                          isDrawingMode ? 'bg-amber-500 text-black' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                          isDrawingMode ? 'bg-amber-500 text-slate-900 shadow-sm' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                         }`}
                       >
                         {isDrawingMode ? 'Stop Drawing' : 'Draw'}
@@ -1002,36 +1075,44 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
             </div>
           </div>
 
+          <div className="mb-4 rounded-2xl border border-slate-700 bg-[#0f2240] p-4 shadow-lg shadow-black/20">
+            <h2 className="mb-3 text-lg font-bold text-amber-500">Match Target</h2>
+            
+            <div className="grid grid-cols-2 gap-3 mb-2">
+              <div>
+                <label className="text-xs text-slate-400 mb-1 block">Target Score</label>
+                <input 
+                  type="number"
+                  value={wwConfig.targetScore}
+                  onChange={(e) => updateWwConfig({ targetScore: parseInt(e.target.value) || 0 })}
+                  className="w-full bg-[#081933] border border-slate-700 rounded-xl px-3 py-2 text-white font-bold"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 mb-1 block">Balls Allocated</label>
+                <input 
+                  type="number"
+                  value={wwConfig.ballsAllocated}
+                  onChange={(e) => updateWwConfig({ ballsAllocated: parseInt(e.target.value) || 0 })}
+                  className="w-full bg-[#081933] border border-slate-700 rounded-xl px-3 py-2 text-white font-bold"
+                />
+              </div>
+            </div>
+            {(state?.totalRuns ?? 0) >= wwConfig.targetScore ? (
+              <div className="mt-2 text-center text-xs font-bold text-emerald-400 uppercase tracking-widest bg-emerald-500/10 py-1.5 rounded-lg border border-emerald-500/20">Target Reached</div>
+            ) : wwConfig.ballsAllocated - (state?.totalBalls ?? 0) <= 0 ? (
+              <div className="mt-2 text-center text-xs font-bold text-red-400 uppercase tracking-widest bg-red-500/10 py-1.5 rounded-lg border border-red-500/20">Balls Finished</div>
+            ) : null}
+          </div>
+
           {mode === 'wagonWheel' ? (
             <div className="mb-4 rounded-2xl border border-slate-700 bg-slate-800 p-4">
-              <h2 className="mb-3 text-lg font-bold text-amber-500">Wagon Wheel Config</h2>
-              
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                <div>
-                  <label className="text-xs text-slate-400 mb-1 block">Target Score</label>
-                  <input 
-                    type="number"
-                    value={wwConfig.targetScore}
-                    onChange={(e) => updateWwConfig({ targetScore: parseInt(e.target.value) || 0 })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 mb-1 block">Balls Allocated</label>
-                  <input 
-                    type="number"
-                    value={wwConfig.ballsAllocated}
-                    onChange={(e) => updateWwConfig({ ballsAllocated: parseInt(e.target.value) || 0 })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-bold"
-                  />
-                </div>
+              <h2 className="mb-1 text-lg font-bold text-amber-500">Wagon Wheel Details</h2>
+              <div className="mb-4 flex flex-col items-start">
+                 <span className="text-xs text-slate-400">Tap any slice on the Wheel to edit its points.</span>
               </div>
 
-              <div className="mt-4 flex flex-col items-center">
-                 <span className="text-xs text-slate-400 text-center">Tap any slice on the Wagon Wheel to edit its configured value.</span>
-              </div>
-
-              <div className="mt-4 pt-4 border-t border-slate-700/50 flex items-center justify-between">
+              <div className="mt-1 border-t border-slate-700/50 pt-4 flex items-center justify-between">
                 <div>
                   <div className="text-sm font-bold text-white">Advanced Mode</div>
                   <div className="text-xs text-slate-400">16 scoring areas</div>
@@ -1058,20 +1139,14 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
               </div>
             </div>
           ) : (
-            <div className="mb-4 rounded-2xl border border-slate-700 bg-slate-800 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-lg font-bold">Field Controls</h2>
+            <div className="mb-4 rounded-2xl border border-slate-700 bg-slate-800 p-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold">Field Engine</h2>
                 <span className="text-xs text-slate-400">
-                  {currentDraft.length} players
+                  {currentDraft.length} players synced automatically.
                 </span>
               </div>
-
-              <button
-                onClick={publishField}
-                className="active:scale-95 transition-transform duration-75 w-full rounded-xl bg-blue-600 px-5 py-3 font-semibold hover:bg-blue-500"
-              >
-                Publish {activeHandedness === 'right' ? 'RH' : 'LH'} Field
-              </button>
+              <span className="flex h-3 w-3 items-center justify-center rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] ml-4"></span>
             </div>
           )}
 
@@ -1199,6 +1274,37 @@ export default function CoachView({ sessionId, onNavigate }: CoachViewProps) {
               >
                 Save
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Code Modal */}
+      {showQR && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-[#0f274f] border border-white/10 rounded-[32px] p-8 max-w-md w-full text-center shadow-2xl relative">
+            <button 
+              onClick={() => setShowQR(false)}
+              className="absolute top-4 right-6 text-slate-400 hover:text-white text-3xl font-light"
+            >
+              &times;
+            </button>
+            <h3 className="text-2xl font-black text-white mb-2">Pair Player Display</h3>
+            <p className="text-sm text-slate-300 mb-8">Scan this code with the iPad camera to instantly connect to this session.</p>
+            
+            <div className="bg-white p-6 rounded-[24px] inline-block shadow-[inset_0_0_20px_rgba(0,0,0,0.1)] mx-auto mb-6 border-4 border-slate-200">
+              <QRCodeSVG 
+                value={`${window.location.origin}/display/${sessionId}`} 
+                size={220}
+                bgColor={"#ffffff"}
+                fgColor={"#081933"}
+                level={"H"}
+                includeMargin={false}
+              />
+            </div>
+            
+            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-sky-300 font-mono break-all font-medium">
+              {window.location.origin}/display/{sessionId}
             </div>
           </div>
         </div>

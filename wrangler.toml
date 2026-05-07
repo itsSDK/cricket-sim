@@ -1,6 +1,8 @@
 name = "cricket-sim"
 main = "src/worker/index.ts"
 compatibility_date = "2024-04-05"
+account_id = "a426e0c4fc1d017b54e21696e05291e1"
+
 
 [assets]
 directory = "./dist"

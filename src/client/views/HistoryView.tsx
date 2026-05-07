@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 
 interface HistorySession {
   id: string;
@@ -25,10 +26,13 @@ export default function HistoryView({
   const [loading, setLoading] = useState(true);
   const [newTitle, setNewTitle] = useState('');
   const [saving, setSaving] = useState(false);
+  const { token, role, logout } = useAuth();
 
   const loadSessions = async () => {
     try {
-      const res = await fetch('/api/sessions');
+      const res = await fetch('/api/sessions', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       const data = (await res.json()) as HistorySession[];
       setSessions(Array.isArray(data) ? data : []);
     } catch (error) {
@@ -40,15 +44,18 @@ export default function HistoryView({
   };
 
   useEffect(() => {
-    void loadSessions();
-  }, []);
+    if (token) void loadSessions();
+  }, [token]);
 
   const startNewSession = async () => {
     setSaving(true);
     try {
       const res = await fetch('/api/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ title: newTitle.trim() || 'New Session' }),
       });
 
@@ -69,7 +76,10 @@ export default function HistoryView({
 
     await fetch(`/api/sessions/${session.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
       body: JSON.stringify({ title: title.trim() }),
     });
 
@@ -82,7 +92,10 @@ export default function HistoryView({
     );
     if (!ok) return;
 
-    await fetch(`/api/sessions/${session.id}`, { method: 'DELETE' });
+    await fetch(`/api/sessions/${session.id}`, { 
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
     await loadSessions();
   };
 
@@ -112,6 +125,24 @@ export default function HistoryView({
                 Manage live field setups, open coach and display views, and keep
                 session history in one place.
               </p>
+
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button 
+                  onClick={logout}
+                  className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-red-400 transition hover:bg-red-500/20"
+                >
+                  Sign Out
+                </button>
+                
+                {role === 'admin' && (
+                  <button 
+                    onClick={() => onNavigate('/admin')}
+                    className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-500 transition hover:bg-amber-500/20"
+                  >
+                    Admin Portal
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex flex-col justify-between rounded-[22px] border border-white/10 bg-white/5 p-5 backdrop-blur sm:p-6">
@@ -182,25 +213,82 @@ export default function HistoryView({
         </div>
 
         <div className="mb-4">
-          <h3 className="text-2xl font-black tracking-tight">Session Library</h3>
+          <h3 className="text-2xl font-black tracking-tight">Match Archives</h3>
           <p className="text-sm text-slate-400">
-            Open, rename, delete, or review existing sessions.
+            Open, rename, delete, or review completed sessions.
           </p>
         </div>
 
         {loading ? (
           <div className="rounded-2xl border border-white/10 bg-[#0b1830] p-6 text-slate-300 shadow-lg">
-            Loading sessions...
+            Loading directory...
           </div>
         ) : (
-          <div className="grid gap-4 pb-8">
-            {sessions.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-white/10 bg-[#0b1830] p-8 text-center text-slate-400 shadow-lg">
-                No sessions yet. Create your first training session above.
+          <div className="grid gap-6 pb-8">
+            {sessions.filter(s => s.status === 'active').length > 0 && (
+              <div className="mb-4">
+                <h4 className="mb-4 text-xs font-bold uppercase tracking-[0.2em] text-emerald-400">Live Matches in Progress</h4>
+                <div className="grid gap-4">
+                  {sessions.filter(s => s.status === 'active').map(s => (
+                    <div key={s.id} className="group relative overflow-hidden rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-r from-emerald-900/40 to-[#0a1d3f] p-6 shadow-2xl transition hover:border-emerald-400/50">
+                      <div className="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-emerald-500/10 blur-3xl group-hover:bg-emerald-400/20" />
+                      
+                      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between relative z-10">
+                        <div>
+                          <div className="mb-2 flex items-center gap-3">
+                            <span className="flex h-3 w-3 items-center justify-center rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
+                            <h2 className="text-2xl font-bold text-white">{s.title || `Session ${s.id}`}</h2>
+                          </div>
+                          <div className="flex gap-4 text-sm font-semibold text-slate-300">
+                            <span>Started: {new Date(s.start_time).toLocaleTimeString()}</span>
+                            <span>Runs: {s.total_runs}</span>
+                            <span>Balls: {s.total_balls}</span>
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col gap-3 w-full sm:w-auto">
+                          <button
+                            onClick={() => onNavigate(`/coach/${s.id}`)}
+                            className="rounded-xl bg-emerald-600 px-8 py-4 text-sm font-black uppercase tracking-wider shadow-lg hover:bg-emerald-500 hover:shadow-emerald-500/25 transition-all w-full sm:w-auto text-center"
+                          >
+                            Resume Match
+                          </button>
+                          
+                          <div className="flex gap-2 w-full justify-between sm:justify-end">
+                            <button
+                              onClick={() => onNavigate(`/display/${s.id}`)}
+                              className="rounded-lg bg-white/10 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-white/20 transition-colors"
+                            >
+                              Display
+                            </button>
+                            <button
+                              onClick={() => renameSession(s)}
+                              className="rounded-lg bg-slate-700/60 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-700 transition-colors"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              onClick={() => deleteSession(s)}
+                              className="rounded-lg bg-red-500/20 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-red-400 hover:bg-red-500/30 transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            {sessions.map((s) => (
+            {sessions.filter(s => s.status !== 'active').length === 0 && sessions.filter(s => s.status === 'active').length === 0 && (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-[#0b1830] p-8 text-center text-slate-400 shadow-lg">
+                No historic sessions yet. Create your first training session above.
+              </div>
+            )}
+
+            {sessions.filter(s => s.status !== 'active').map((s) => (
               <div
                 key={s.id}
                 className="rounded-2xl border border-white/10 bg-[#0b1830] p-4 shadow-xl transition hover:border-white/20 hover:bg-[#0d1d3b] sm:p-5"

@@ -102,14 +102,18 @@ function getFielderRotation(pos: Position) {
 
 function project3D(nx: number, ny: number) {
   const dx = nx - 0.5;
-  const py = 0.14 + ny * 0.72;
-  const perspectiveStrength = (1 - ny) * 0.12;
-  const px = 0.5 + dx * (1 - perspectiveStrength);
-  const scale = 0.9 + ny * 0.28;
+  const dy = ny - 0.5;
+  
+  // Align perfectly with the orthographic structural ellipses formed by the 3D CSS
+  const px = 0.5 + dx * 0.74;
+  const py = 0.5 + dy * 0.78;
+  
+  // Perspectival scale sizing depth illusion 
+  const scale = 0.85 + ny * 0.3;
 
   return {
-    x: clamp(px, 0.1, 0.9),
-    y: clamp(py, 0.12, 0.88),
+    x: clamp(px, 0.05, 0.95),
+    y: clamp(py, 0.05, 0.95),
     scale,
   };
 }
@@ -124,6 +128,10 @@ export default function DisplayView({
   const [positions, setPositions] = useState<Position[]>(
     normalizePositions(RIGHT_HAND_POSITIONS, 'right'),
   );
+  const positionsRef = React.useRef<Position[]>(positions);
+  useEffect(() => {
+    positionsRef.current = positions;
+  }, [positions]);
   const [audioEnabled, setAudioEnabled] = useState(audioService.isEnabled);
   const [connected, setConnected] = useState(false);
   const [state, setState] = useState<SessionState | null>(null);
@@ -151,10 +159,9 @@ export default function DisplayView({
       } else if (msg.type === 'FIELD_CHANGED') {
         const newPositions = normalizePositions(msg.positions, msg.handedness);
         
-        // Detect changed fielders against what we currently have
         const changed: string[] = [];
         for (const newPos of newPositions) {
-          const oldPos = positions.find((p) => p.id === newPos.id);
+          const oldPos = positionsRef.current.find((p) => p.id === newPos.id);
           if (oldPos) {
             const dx = Math.abs(newPos.nx - oldPos.nx);
             const dy = Math.abs(newPos.ny - oldPos.ny);
@@ -172,7 +179,7 @@ export default function DisplayView({
         }
         highlightTimeoutRef.current = window.setTimeout(() => {
           setHighlightedIds([]);
-        }, 1500);
+        }, 3000);
 
         setActiveHandedness(msg.handedness);
         setPositions(newPositions);
@@ -309,108 +316,44 @@ export default function DisplayView({
   const isFinished = ballsRemaining === 0;
 
   return (
-    <div className="min-h-dvh bg-[#081933] text-white">
-      <div className="sticky top-0 z-20 border-b border-white/10 bg-[#081933]/95 px-3 py-3 backdrop-blur sm:px-4">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <h1 className="text-xl font-bold sm:text-2xl">
-              {state?.title || 'Display View'}
-            </h1>
-            <p className="text-sm text-slate-300">Session ID: {sessionId}</p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <div className="rounded-2xl bg-slate-900/70 px-3 py-2 text-center shadow sm:px-4">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs">
-                Runs
+    <div className="min-h-dvh bg-[#081933] text-white" onClick={!audioEnabled ? enableAudio : undefined}>
+      <div className="flex flex-col items-center p-3 sm:p-4 lg:p-5 w-full">
+        {state?.status === 'completed' ? (
+          <div className="w-full flex flex-col items-center justify-center mt-8 md:mt-16 relative z-10">
+            <div className="mb-6 rounded-[32px] bg-gradient-to-b from-slate-800 to-[#071327] p-8 sm:p-10 text-center border-t border-white/10 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)] max-w-xl w-full">
+              <div className="flex justify-center mb-6">
+                <span className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400 ring-2 ring-emerald-500/20">
+                  <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                </span>
               </div>
-              <div className="text-2xl font-extrabold text-emerald-400 sm:text-3xl">
-                {state?.totalRuns ?? 0}
+              <h2 className="text-3xl sm:text-4xl font-black uppercase tracking-widest text-white mb-2">
+                Match Concluded
+              </h2>
+              <p className="text-slate-400 font-medium mb-10 text-sm sm:text-base">This session has been finalized.</p>
+              
+              <div className="grid grid-cols-2 gap-4 mb-10">
+                 <div className="bg-[#071327] rounded-2xl p-5 border border-white/5 shadow-inner">
+                   <div className="text-[10px] sm:text-xs uppercase tracking-widest text-slate-500 mb-2">Final Score</div>
+                   <div className="text-5xl font-black text-emerald-400 drop-shadow-md">{state?.totalRuns ?? 0}</div>
+                 </div>
+                 <div className="bg-[#071327] rounded-2xl p-5 border border-white/5 shadow-inner">
+                   <div className="text-[10px] sm:text-xs uppercase tracking-widest text-slate-500 mb-2">Total Balls</div>
+                   <div className="text-5xl font-black text-amber-400 drop-shadow-md">{state?.totalBalls ?? 0}</div>
+                 </div>
               </div>
-            </div>
 
-            <div className="rounded-2xl bg-slate-900/70 px-3 py-2 text-center shadow sm:px-4">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs">
-                Balls
-              </div>
-              <div className="text-2xl font-extrabold text-amber-300 sm:text-3xl">
-                {state?.totalBalls ?? 0}
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-slate-900/70 px-3 py-2 text-center shadow sm:px-4">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs">
-                Batter
-              </div>
-              <div className="text-lg font-extrabold text-cyan-300 sm:text-xl">
-                {activeHandedness === 'right' ? 'RH' : 'LH'}
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-slate-900/70 p-1 shadow">
-              {mode === 'fielding' ? (
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => setDisplayMode('2d')}
-                    className={`rounded-xl px-3 py-2 text-sm font-semibold ${displayMode === '2d'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-transparent text-slate-300 hover:bg-slate-800'
-                      }`}
-                  >
-                    2D
-                  </button>
-                  <button
-                    onClick={() => setDisplayMode('3d')}
-                    className={`rounded-xl px-3 py-2 text-sm font-semibold ${displayMode === '3d'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-transparent text-slate-300 hover:bg-slate-800'
-                      }`}
-                  >
-                    3D
-                  </button>
-                </div>
-              ) : (
-                <div className="rounded-xl bg-amber-500/20 px-4 py-2 text-sm font-bold text-amber-400">
-                  Wagon Wheel Mode
-                </div>
-              )}
-            </div>
-
-            <div
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${connected ? 'bg-green-700' : 'bg-red-700'
-                }`}
-            >
-              {connected ? 'Live' : 'Disconnected'}
-            </div>
-
-            {!audioEnabled && (
-              <button
-                onClick={enableAudio}
-                className="rounded-xl bg-yellow-400 px-4 py-3 text-sm font-bold text-black"
+              {/* Only show return button if they are not in a readonly communal ipad state without auth */}
+              <button 
+                onClick={goToHistoryView} 
+                className="w-full rounded-xl bg-slate-700/50 px-6 py-4 text-sm font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-700 hover:text-white transition"
               >
-                Enable Audio
+                Return to Lobby
               </button>
-            )}
-
-            <button
-              onClick={goToCoachView}
-              className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold hover:bg-indigo-500"
-            >
-              Go to Coach View
-            </button>
-
-            <button
-              onClick={goToHistoryView}
-              className="rounded-xl bg-slate-700 px-4 py-3 text-sm font-semibold hover:bg-slate-600"
-            >
-              History
-            </button>
+            </div>
           </div>
-        </div>
-      </div>
-
-      <div className="flex items-start justify-center p-3 sm:p-4 lg:p-5">
-        {mode === 'wagonWheel' ? (
+        ) : (
           <div className="w-full flex flex-col items-center">
              
             {(isTargetAchieved || isFinished) && (
@@ -446,6 +389,8 @@ export default function DisplayView({
                  </div>
                </div>
             </div>
+
+            {mode === 'wagonWheel' ? (
 
             <div
               className={`relative aspect-square w-full overflow-hidden rounded-full border-[6px] sm:border-8 border-amber-400 bg-[#ffe854] shadow-[0_0_80px_rgba(250,180,0,0.25)] transition-opacity duration-500 ${
@@ -544,7 +489,6 @@ export default function DisplayView({
                 );
               })}
             </div>
-          </div>
         ) : displayMode === '2d' ? (
           <div
             className="relative aspect-square w-full overflow-hidden rounded-full border-4 border-white/70 bg-[#2f913d] shadow-[inset_0_0_40px_rgba(0,0,0,0.18)]"
@@ -688,9 +632,8 @@ export default function DisplayView({
 
                     const proj = (nx: number, ny: number) => {
                       const dx = nx - 0.5;
-                      const py = 0.14 + ny * 0.72;
-                      const pers = (1 - ny) * 0.12;
-                      return { x: 0.5 + dx * (1 - pers), y: py };
+                      const dy = ny - 0.5;
+                      return { x: 0.5 + dx * 0.74, y: 0.5 + dy * 0.78 };
                     };
 
                     const projOrigin = proj(ORIGIN_X, ORIGIN_Y);
@@ -769,6 +712,8 @@ export default function DisplayView({
               })}
             </div>
           </div>
+        )}
+        </div>
         )}
       </div>
     </div>

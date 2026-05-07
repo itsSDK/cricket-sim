@@ -12,10 +12,13 @@ export class WebSocketService {
   public isConnected = false;
   private pinger: number | null = null;
 
-  constructor(private sessionId: string, private role: Role) {
+  constructor(private sessionId: string, private role: Role, private token?: string) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // When running locally with wrangler dev, the host is usually the same
-    this.url = `${protocol}//${window.location.host}/ws/session/${sessionId}`;
+    const params = new URLSearchParams({ role });
+    if (token) params.set('token', token);
+    
+    this.url = `${protocol}//${window.location.host}/ws/session/${sessionId}?${params.toString()}`;
   }
 
   connect() {

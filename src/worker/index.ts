@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import { SessionDurableObject } from '../durable/SessionDurableObject';
+import { verifyFirebaseToken, checkIsAllowedUser } from './auth';
 
 export { SessionDurableObject };
 
@@ -7,6 +8,7 @@ export interface Env {
   DB: D1Database;
   SESSION_DO: DurableObjectNamespace;
   ASSETS?: Fetcher;
+  FIREBASE_PROJECT_ID?: string;
 }
 
 interface SessionRequestBody {
@@ -21,6 +23,18 @@ export default {
     if (url.pathname.startsWith('/ws/session/')) {
       const sessionId = url.pathname.split('/ws/session/')[1];
       if (!sessionId) return new Response('Missing session ID', { status: 400 });
+
+      const role = url.searchParams.get('role');
+      if (role === 'coach') {
+        const token = url.searchParams.get('token');
+        if (!token) return new Response('Missing auth token', { status: 401 });
+        
+        const payload = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID);
+        if (!payload || !payload.email) return new Response('Invalid auth token', { status: 401 });
+        
+        const dbUser = await checkIsAllowedUser(payload.email as string, env.DB);
+        if (!dbUser) return new Response('User not in allowlist', { status: 403 });
+      }
 
       const doUrl = new URL(request.url);
       doUrl.searchParams.set('sessionId', sessionId);
@@ -79,12 +93,47 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
     return json({}, 200);
   }
 
+  // Public API endpoint for specific session if needed by display
+  if (request.method === 'GET' && url.pathname.startsWith('/api/sessions/') && url.pathname.split('/').length === 4) {
+      const sessionId = url.pathname.split('/').pop();
+      if (!sessionId) return json({ error: 'Missing session ID' }, 400);
+
+      const [sessionResult, ballsResult] = await env.DB.batch([
+        env.DB.prepare('SELECT * FROM sessions WHERE id = ?').bind(sessionId),
+        env.DB.prepare(
+          'SELECT * FROM balls WHERE session_id = ? ORDER BY ball_number ASC',
+        ).bind(sessionId),
+      ]);
+
+      return json({
+        session: sessionResult.results?.[0] ?? null,
+        balls: ballsResult.results ?? [],
+      });
+  }
+
+  // Require Auth for all other API endpoints
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return json({ error: 'Missing Authorization header' }, 401);
+  }
+
+  const token = authHeader.split('Bearer ')[1];
+  const payload = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID);
+  if (!payload || !payload.email) return json({ error: 'Invalid token' }, 401);
+
+  const dbUser = await checkIsAllowedUser(payload.email as string, env.DB);
+  if (!dbUser) return json({ error: 'Not authorized' }, 403);
+
   try {
     if (request.method === 'GET' && url.pathname === '/api/sessions') {
       const result = await env.DB.prepare(
         'SELECT * FROM sessions ORDER BY start_time DESC',
       ).all();
       return json(result.results ?? []);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/auth/verify') {
+      return json({ ok: true, email: dbUser.email, role: dbUser.role }, 200);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/sessions') {
@@ -142,21 +191,45 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       return json({ ok: true });
     }
 
-    if (request.method === 'GET' && url.pathname.startsWith('/api/sessions/')) {
-      const sessionId = url.pathname.split('/').pop();
-      if (!sessionId) return json({ error: 'Missing session ID' }, 400);
+    // --- Admin Routes ---
+    if (url.pathname.startsWith('/api/users')) {
+      if (dbUser.role !== 'admin') return json({ error: 'Admin access required' }, 403);
 
-      const [sessionResult, ballsResult] = await env.DB.batch([
-        env.DB.prepare('SELECT * FROM sessions WHERE id = ?').bind(sessionId),
-        env.DB.prepare(
-          'SELECT * FROM balls WHERE session_id = ? ORDER BY ball_number ASC',
-        ).bind(sessionId),
-      ]);
+      if (request.method === 'GET' && url.pathname === '/api/users') {
+        const result = await env.DB.prepare('SELECT email, role, created_at, invited_by FROM allowed_users ORDER BY created_at DESC').all();
+        return json(result.results ?? []);
+      }
 
-      return json({
-        session: sessionResult.results?.[0] ?? null,
-        balls: ballsResult.results ?? [],
-      });
+      if (request.method === 'POST' && url.pathname === '/api/users') {
+        const body = (await readJsonBody(request)) as { email?: string; role?: string };
+        const newEmail = body.email?.trim().toLowerCase();
+        const role = body.role === 'admin' ? 'admin' : 'coach';
+
+        if (!newEmail || !newEmail.includes('@')) {
+           return json({ error: 'Valid email is required' }, 400);
+        }
+
+        await env.DB.prepare(
+          `INSERT INTO allowed_users (email, role, invited_by, created_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(email) DO UPDATE SET role = excluded.role`
+        )
+          .bind(newEmail, role, dbUser.email, Math.floor(Date.now() / 1000))
+          .run();
+
+        return json({ ok: true });
+      }
+
+      if (request.method === 'DELETE' && url.pathname.startsWith('/api/users/')) {
+        const targetEmail = decodeURIComponent(url.pathname.split('/').pop() || '');
+        if (!targetEmail) return json({ error: 'Missing email' }, 400);
+
+        if (targetEmail === dbUser.email) {
+          return json({ error: 'You cannot revoke your own access' }, 400);
+        }
+
+        await env.DB.prepare('DELETE FROM allowed_users WHERE email = ?').bind(targetEmail).run();
+        return json({ ok: true });
+      }
     }
 
     return json({ error: 'Not Found' }, 404);

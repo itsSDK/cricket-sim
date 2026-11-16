@@ -93,6 +93,7 @@ export default function HowzatCoachAid({
   const [curTime, setCurTime] = useState<number>(0);
   const [playing, setPlaying] = useState<boolean>(false);
   const [speed, setSpeed] = useState<number>(0.25);
+  const [bitmapTick, setBitmapTick] = useState<number>(0);
 
   const frameSourceRef = useRef<FrameSource | null>(null);
   const shownBitmapRef = useRef<ImageBitmap | null>(null);
@@ -144,12 +145,14 @@ export default function HowzatCoachAid({
       const cached = fs.peek(clamped);
       if (cached) {
         shownBitmapRef.current = cached;
+        setBitmapTick((v) => v + 1);
       } else {
         const bm = await fs.get(clamped);
         if (tok === seekTokenRef.current && bm) {
           shownBitmapRef.current = bm;
           setCurFrameIdx(clamped);
           setCurTime(fs.times[clamped] ?? t);
+          setBitmapTick((v) => v + 1);
           const ahead = Math.min(16, Math.floor(fs.keepRadius * 0.65));
           fs.prefetch(clamped + ahead);
         }
@@ -316,7 +319,10 @@ export default function HowzatCoachAid({
           setBusyStage('Decoding video frames...');
           setBusyProgress(0.88);
           const firstBm = await fs.get(firstShotFrame);
-          if (firstBm) shownBitmapRef.current = firstBm;
+          if (firstBm) {
+            shownBitmapRef.current = firstBm;
+            setBitmapTick((v) => v + 1);
+          }
         }
 
         if (presetPlayerName) setPlayerName(presetPlayerName);
@@ -444,6 +450,7 @@ export default function HowzatCoachAid({
               curFrameIdxRef.current = i;
               setCurFrameIdx(i);
               setCurTime(fs.times[i]);
+              setBitmapTick((v) => v + 1);
               const ahead = Math.min(18, Math.floor(fs.keepRadius * 0.65));
               fs.prefetch(i + ahead);
             } else {
@@ -457,6 +464,7 @@ export default function HowzatCoachAid({
                       curFrameIdxRef.current = i;
                       setCurFrameIdx(i);
                       setCurTime(fs.times[i]);
+                      setBitmapTick((v) => v + 1);
                     }
                   })
                   .catch(() => {})
@@ -647,6 +655,7 @@ export default function HowzatCoachAid({
     enrichedShots,
     videoInfo,
     getCropBox,
+    bitmapTick,
   ]);
 
   // Frame Jog Strip Render Effect (matching coach.html #jog, made bigger & HiDPI crisp)

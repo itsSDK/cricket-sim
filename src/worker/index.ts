@@ -50,9 +50,49 @@ export default {
 
     if (url.pathname.startsWith('/howzat-videos/')) {
       if (env.ASSETS) {
-        const assetRes = await env.ASSETS.fetch(request);
-        if (assetRes.status !== 404 && assetRes.status !== 307) {
-          return assetRes;
+        const assetRes = await env.ASSETS.fetch(new Request(url.toString(), { method: 'GET' }));
+        if (assetRes.status === 200) {
+          const buf = await assetRes.arrayBuffer();
+          const total = buf.byteLength;
+          const contentType = assetRes.headers.get('Content-Type') || 'video/mp4';
+          const baseHeaders: Record<string, string> = {
+            'Content-Type': contentType,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'public, max-age=86400',
+          };
+          if (request.method === 'HEAD') {
+            return new Response(null, {
+              status: 200,
+              headers: {
+                ...baseHeaders,
+                'Content-Length': String(total),
+              },
+            });
+          }
+          const rangeHeader = request.headers.get('Range') || request.headers.get('range');
+          if (rangeHeader) {
+            const m = /bytes=(\d+)-(\d*)/i.exec(rangeHeader);
+            if (m) {
+              const start = parseInt(m[1], 10) || 0;
+              const end = m[2] ? Math.min(total - 1, parseInt(m[2], 10)) : total - 1;
+              const slice = buf.slice(start, end + 1);
+              return new Response(slice, {
+                status: 206,
+                headers: {
+                  ...baseHeaders,
+                  'Content-Range': `bytes ${start}-${end}/${total}`,
+                  'Content-Length': String(slice.byteLength),
+                },
+              });
+            }
+          }
+          return new Response(buf, {
+            status: 200,
+            headers: {
+              ...baseHeaders,
+              'Content-Length': String(total),
+            },
+          });
         }
       }
       try {

@@ -82,22 +82,56 @@ export function drawUpright(
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
+const urlBlobCache = new Map<string, Blob>();
+
 export async function fetchRange(
   src: string | File | Blob,
   start: number,
   end: number,
 ): Promise<ArrayBuffer> {
   if (typeof src !== 'string') return await src.slice(start, end).arrayBuffer();
+  const cached = urlBlobCache.get(src);
+  if (cached) return await cached.slice(start, end).arrayBuffer();
   const r = await fetch(src, { headers: { Range: `bytes=${start}-${end - 1}` } });
-  if (r.status !== 206 && r.status !== 200) throw new Error('range fetch failed ' + r.status);
-  return await r.arrayBuffer();
+  if (r.status === 206) {
+    return await r.arrayBuffer();
+  }
+  if (r.status === 200) {
+    const fullBlob = await r.blob();
+    if (fullBlob.size > end - start) {
+      urlBlobCache.set(src, fullBlob);
+      return await fullBlob.slice(start, end).arrayBuffer();
+    }
+    return await fullBlob.arrayBuffer();
+  }
+  throw new Error('range fetch failed ' + r.status);
 }
 
 async function topLevelBoxes(url: string | File | Blob) {
-  const size =
-    typeof url === 'string'
-      ? +(await fetch(url, { method: 'HEAD' })).headers.get('Content-Length')!
-      : url.size;
+  let size = 0;
+  if (typeof url === 'string') {
+    const cached = urlBlobCache.get(url);
+    if (cached) {
+      size = cached.size;
+    } else {
+      const headRes = await fetch(url, { method: 'HEAD' });
+      size = +(headRes.headers.get('Content-Length') || 0);
+      if (!size) {
+        const probe = await fetch(url, { headers: { Range: 'bytes=0-15' } });
+        const cr = probe.headers.get('Content-Range');
+        const m = cr && /\/(\d+)$/.exec(cr);
+        if (m) {
+          size = +m[1];
+        } else if (probe.status === 200) {
+          const blob = await probe.blob();
+          urlBlobCache.set(url, blob);
+          size = blob.size;
+        }
+      }
+    }
+  } else {
+    size = url.size;
+  }
   const boxes: Array<{ type: string; start: number; size: number }> = [];
   let p = 0;
   while (p < size) {

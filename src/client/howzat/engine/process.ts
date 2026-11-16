@@ -122,10 +122,10 @@ export function batterRoi(A: BatterAnalysis, upW: number, upH: number): RoiBox |
   }
   if (hx.length < 20) return null;
   const torso = (torsoPx(d, n, cw, ch) / cw) * upW;
-  const side = Math.min(upW, upH, 7 * torso);
-  if (side > 0.7 * Math.max(upW, upH)) return null;
+  const side = Math.min(upW, upH, 5.2 * torso);
+  if (side > 0.82 * Math.max(upW, upH)) return null;
   const cx = med(hx) * upW;
-  const cy = med(hy) * upH - 0.3 * torso;
+  const cy = med(hy) * upH - 0.28 * torso;
   const x = Math.max(0, Math.min(upW - side, cx - side / 2));
   const y = Math.max(0, Math.min(upH - side, cy - side / 2));
   return { x: x / upW, y: y / upH, w: side / upW, h: side / upH };

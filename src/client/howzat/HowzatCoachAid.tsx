@@ -178,10 +178,19 @@ export default function HowzatCoachAid({
     }));
   }, [weightResult, shots]);
 
-  // Active frame pose (interpolated to exact video timestamp)
+  // Active frame pose (interpolated to exact video timestamp, auto-correcting container cts shift)
   const currentFrame: WeightFrame | null = useMemo(() => {
     if (!weightResult || !analysis) return null;
-    return poseAtTime(weightResult, analysis.times, curTime, analysis.meta.fps);
+    const fs = frameSourceRef.current;
+    const originShift =
+      fs &&
+      !fs.isVirtual &&
+      fs.times.length > 0 &&
+      analysis.times.length > 0 &&
+      Math.abs(analysis.times[0] - fs.times[0]) < 0.1
+        ? analysis.times[0] - fs.times[0]
+        : 0;
+    return poseAtTime(weightResult, analysis.times, curTime + originShift, analysis.meta.fps);
   }, [weightResult, analysis, curTime]);
 
   // Frame-accurate seek helper (matching coach.html seek(i))
@@ -281,8 +290,10 @@ export default function HowzatCoachAid({
         setBusyStage('Loading AI pose track...');
         setBusyProgress(0.25);
 
-        const idbKey = typeof src === 'string' ? null : `v3:${src.name}:${src.size}`;
+        const idbKey = typeof src === 'string' ? null : `v4:${src.name}:${src.size}`;
+        const hdKey = `hd:v4:${idbKey || cacheKey || label}`;
         let A =
+          (await idbGetAnalysis(hdKey)) ||
           (await loadPreCachedAnalysis(cacheKey)) ||
           (idbKey ? await idbGetAnalysis(idbKey) : null);
 
@@ -469,6 +480,39 @@ export default function HowzatCoachAid({
       frameSourceRef.current?.closeAll();
     };
   }, [loadPreset]);
+
+  // Re-run two-pass tight-crop HD AI pose tracking on the currently loaded real video
+  const handleRetrackHd = useCallback(async () => {
+    if (!videoInfo || isVirtualStage) return;
+    setPlaying(false);
+    setBusyStage('HD Pass 1/2: Locating batter with tight crease crop...');
+    setBusyProgress(0.05);
+    try {
+      const A = await analyseBatter(videoInfo, {
+        maxPoseFps: 60,
+        onStage: (s) => setBusyStage(s),
+        onProgress: (p) => setBusyProgress(0.05 + p * 0.9),
+      });
+      await idbPutAnalysis(`hd:v4:${activeClipKey}`, A);
+      const sideDetect = detectBowlerSide(A.data, A.meta.cw, A.meta.ch);
+      if (sideDetect.confidence >= 0.6) setBowlerSide(sideDetect.side);
+      const sig = poseSignals(A.times, A.data, A.meta.cw, A.meta.ch);
+      const detShots = detectShots(sig);
+      for (const s of detShots) {
+        if (s.contact == null) s.contact = s.stanceEnd + 0.3;
+      }
+      setAnalysis(A);
+      if (detShots.length > 0) {
+        setShots(detShots);
+      }
+    } catch (err: any) {
+      console.error('HD retrack failed:', err);
+      alert(`HD Re-Track failed: ${err?.message || err}`);
+    } finally {
+      setBusyStage(null);
+      setBusyProgress(0);
+    }
+  }, [videoInfo, isVirtualStage, activeClipKey]);
 
   // Frame-synchronized Playback Loop (never outruns video decoder, matching coach.html tick(ts))
   const playTimeRef = useRef<number>(0);
@@ -1259,6 +1303,17 @@ export default function HowzatCoachAid({
           >
             {showSkeleton ? '● AI Skeleton' : '○ AI Skeleton'}
           </button>
+
+          {!isVirtualStage && videoInfo && (
+            <button
+              onClick={() => void handleRetrackHd()}
+              disabled={Boolean(busyStage)}
+              className="rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 px-2.5 py-1.5 text-xs font-bold text-sky-200 transition disabled:opacity-40"
+              title="Re-run 2-pass tight-crop HD AI pose tracking on this video"
+            >
+              🎯 Re-Track HD
+            </button>
+          )}
 
           {!compact && (
             <button

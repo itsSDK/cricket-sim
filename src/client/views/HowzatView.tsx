@@ -25,7 +25,7 @@ export default function HowzatView({ onNavigate }: { onNavigate: (path: string) 
           </div>
         </div>
         <div className="text-[11px] text-slate-400 hidden lg:block font-medium">
-          Space: Play/Pause · ←/→: Step 1f · Shift+←/→: Step 10f
+          Space: Play/Pause · ←/→: Step 1f · Shift+←/→: Step 10f · F: Flag Frame · [/]: Prev/Next Flag
         </div>
       </header>
 

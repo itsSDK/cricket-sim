@@ -36,6 +36,52 @@ import TelestratorLayer, {
 
 const CONTACT_STRENGTH = 2.5;
 
+export interface SeekFlag {
+  id: string;
+  frameIdx: number;
+  time: number;
+  label: string;
+  color: string;
+}
+
+const FLAG_PRESETS: Array<{ label: string; color: string; icon: string }> = [
+  { label: 'Trigger', color: '#38bdf8', icon: '⚡' },
+  { label: 'Foot Plant', color: '#a855f7', icon: '👟' },
+  { label: 'Contact', color: '#10b981', icon: '🏏' },
+  { label: 'Issue', color: '#f43f5e', icon: '⚠️' },
+  { label: 'Great Shot', color: '#f59e0b', icon: '⭐' },
+];
+
+const FLAG_COLORS = ['#f43f5e', '#38bdf8', '#a855f7', '#10b981', '#f59e0b', '#f8fafc'];
+
+function loadStoredFlags(clipKey: string): SeekFlag[] {
+  try {
+    const raw = localStorage.getItem(`howzat:flags:v1:${clipKey}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (f) => f && typeof f.frameIdx === 'number' && typeof f.label === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredFlags(clipKey: string, list: SeekFlag[]): void {
+  try {
+    localStorage.setItem(`howzat:flags:v1:${clipKey}`, JSON.stringify(list));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function formatFlagTime(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return m > 0 ? `${m}:${s.toFixed(1).padStart(4, '0')}` : `${s.toFixed(2)}s`;
+}
+
 interface HowzatCoachAidProps {
   onSyncToDisplay?: (payload: HowzatSyncPayload) => void;
   defaultPlayerName?: string;
@@ -94,6 +140,14 @@ export default function HowzatCoachAid({
   const [playing, setPlaying] = useState<boolean>(false);
   const [speed, setSpeed] = useState<number>(0.25);
   const [bitmapTick, setBitmapTick] = useState<number>(0);
+
+  // Seek Bar Coaching Flags state (persisted per clip in localStorage)
+  const [activeClipKey, setActiveClipKey] = useState<string>('IMG_8141.MP4');
+  const [flags, setFlags] = useState<SeekFlag[]>(() => loadStoredFlags('IMG_8141.MP4'));
+  const [flagEditorOpen, setFlagEditorOpen] = useState<boolean>(false);
+  const [flagDraftLabel, setFlagDraftLabel] = useState<string>('');
+  const [flagDraftColor, setFlagDraftColor] = useState<string>('#f43f5e');
+  const flagInputRef = useRef<HTMLInputElement | null>(null);
 
   const frameSourceRef = useRef<FrameSource | null>(null);
   const shownBitmapRef = useRef<ImageBitmap | null>(null);
@@ -338,6 +392,10 @@ export default function HowzatCoachAid({
         setCurFrameIdx(firstShotFrame);
         setCurTime(fs.times[firstShotFrame] ?? 0);
         setTelShapes([]);
+        const clipStorageKey = idbKey || cacheKey || label;
+        setActiveClipKey(clipStorageKey);
+        setFlags(loadStoredFlags(clipStorageKey));
+        setFlagEditorOpen(false);
 
         // Background: decode audio only around shot windows to refine bat-on-ball contact timing
         if (!usingVirtual) {
@@ -683,7 +741,7 @@ export default function HowzatCoachAid({
     jg.fillStyle = '#12161f';
     jg.fillRect(0, 0, W, H);
 
-    // Precompute frame indices for shot starts and bat contacts
+    // Precompute frame indices for shot starts, bat contacts, and custom coaching flags
     const shotStartFrames = new Map<number, number>();
     const contactFrames = new Map<number, boolean>();
     enrichedShots.forEach((s, idx) => {
@@ -692,6 +750,10 @@ export default function HowzatCoachAid({
         contactFrames.set(fs.indexAt(s.contact), Boolean(s.heard));
       }
     });
+    const flagsByFrame = new Map<number, SeekFlag>();
+    for (const fl of flags) {
+      flagsByFrame.set(fl.frameIdx, fl);
+    }
 
     const half = Math.ceil(cx / px) + 1;
     for (let d = -half; d <= half; d++) {
@@ -710,13 +772,17 @@ export default function HowzatCoachAid({
         jg.fillRect(x - px / 2 + 1 * dpr, H - 11 * dpr, px - 2 * dpr, 8 * dpr);
       }
 
-      // Highlight contact frame or regular 1-frame / 10-frame ticks
+      // Highlight contact frame, custom flag, or regular 1-frame / 10-frame ticks
       const isContact = contactFrames.has(i);
       const isHeard = contactFrames.get(i);
       const shotNum = shotStartFrames.get(i);
+      const frameFlag = flagsByFrame.get(i);
       const big = i % 10 === 0;
 
-      if (isContact) {
+      if (frameFlag) {
+        jg.fillStyle = frameFlag.color;
+        jg.fillRect(x - 1.4 * dpr, 2 * dpr, 2.8 * dpr, H - 15 * dpr);
+      } else if (isContact) {
         jg.fillStyle = isHeard ? '#3ddc84' : 'rgba(247, 201, 72, 0.75)';
         jg.fillRect(x - 1.5 * dpr, 4 * dpr, 3 * dpr, H - 17 * dpr);
       } else {
@@ -747,10 +813,53 @@ export default function HowzatCoachAid({
       }
     }
 
+    // Draw custom coaching flag pennants + compact tags in a top pass so labels stay crisp above ticks
+    for (let d = -half; d <= half; d++) {
+      const i = curFrameIdx + d;
+      if (i < 0 || i >= fs.count) continue;
+      const frameFlag = flagsByFrame.get(i);
+      if (!frameFlag) continue;
+      const x = cx + d * px;
+      const tagText =
+        frameFlag.label.length > 14 ? `${frameFlag.label.slice(0, 13)}…` : frameFlag.label;
+
+      jg.save();
+      jg.font = `700 ${10 * dpr}px system-ui, -apple-system, sans-serif`;
+      const tw = jg.measureText(tagText).width;
+      const padX = 5 * dpr;
+      const pillW = tw + padX * 2 + 8 * dpr;
+      const pillH = 15 * dpr;
+      const pillY = 2 * dpr;
+
+      // Dark translucent badge with flag-colored left pennant & border
+      jg.fillStyle = 'rgba(10, 15, 28, 0.92)';
+      jg.strokeStyle = frameFlag.color;
+      jg.lineWidth = 1.2 * dpr;
+      jg.beginPath();
+      if (typeof jg.roundRect === 'function') {
+        jg.roundRect(x - 1.4 * dpr, pillY, pillW, pillH, [0, 4 * dpr, 4 * dpr, 0]);
+      } else {
+        jg.rect(x - 1.4 * dpr, pillY, pillW, pillH);
+      }
+      jg.fill();
+      jg.stroke();
+
+      // Solid pennant accent tab on the left edge of the badge
+      jg.fillStyle = frameFlag.color;
+      jg.fillRect(x - 1.4 * dpr, pillY, 6 * dpr, pillH);
+
+      // Flag label text
+      jg.fillStyle = '#ffffff';
+      jg.textAlign = 'left';
+      jg.textBaseline = 'middle';
+      jg.fillText(tagText, x + 7.5 * dpr, pillY + pillH / 2 + 0.5 * dpr);
+      jg.restore();
+    }
+
     // Gold center playhead line
     jg.fillStyle = '#f7c948';
     jg.fillRect(cx - 1.5 * dpr, 0, 3 * dpr, H);
-  }, [curFrameIdx, weightResult, analysis, enrichedShots, theaterMode]);
+  }, [curFrameIdx, weightResult, analysis, enrichedShots, theaterMode, flags]);
 
   // Step frames helper
   const stepFrames = useCallback(
@@ -759,6 +868,92 @@ export default function HowzatCoachAid({
       void seekToFrameIndex(curFrameIdx + deltaFrames);
     },
     [curFrameIdx, seekToFrameIndex],
+  );
+
+  // Seek Bar Flagging helpers
+  const currentFrameFlag = useMemo(
+    () => flags.find((f) => f.frameIdx === curFrameIdx) ?? null,
+    [flags, curFrameIdx],
+  );
+
+  const persistFlags = useCallback(
+    (updater: (prev: SeekFlag[]) => SeekFlag[]) => {
+      setFlags((prev) => {
+        const next = updater(prev).sort((a, b) => a.frameIdx - b.frameIdx);
+        saveStoredFlags(activeClipKey, next);
+        return next;
+      });
+    },
+    [activeClipKey],
+  );
+
+  const upsertFlagAtCurrentFrame = useCallback(
+    (label: string, color: string) => {
+      const cleanLabel = label.trim() || 'Flag';
+      persistFlags((prev) => {
+        const existing = prev.find((f) => f.frameIdx === curFrameIdx);
+        if (existing) {
+          return prev.map((f) =>
+            f.frameIdx === curFrameIdx
+              ? { ...f, label: cleanLabel, color, time: curTime }
+              : f,
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            frameIdx: curFrameIdx,
+            time: curTime,
+            label: cleanLabel,
+            color,
+          },
+        ];
+      });
+    },
+    [curFrameIdx, curTime, persistFlags],
+  );
+
+  const removeFlagById = useCallback(
+    (id: string) => {
+      persistFlags((prev) => prev.filter((f) => f.id !== id));
+    },
+    [persistFlags],
+  );
+
+  const triggerFlagComposer = useCallback(() => {
+    setPlaying(false);
+    const existing = flags.find((f) => f.frameIdx === curFrameIdx);
+    if (existing) {
+      setFlagDraftLabel(existing.label);
+      setFlagDraftColor(existing.color);
+    } else {
+      upsertFlagAtCurrentFrame('Flag', '#f43f5e');
+      setFlagDraftLabel('Flag');
+      setFlagDraftColor('#f43f5e');
+    }
+    setFlagEditorOpen(true);
+    setTimeout(() => {
+      flagInputRef.current?.focus();
+      flagInputRef.current?.select();
+    }, 20);
+  }, [flags, curFrameIdx, upsertFlagAtCurrentFrame]);
+
+  const jumpToAdjacentFlag = useCallback(
+    (dir: -1 | 1) => {
+      if (!flags.length) return;
+      setPlaying(false);
+      if (dir < 0) {
+        const prev = [...flags].reverse().find((f) => f.frameIdx < curFrameIdx);
+        const target = prev ?? flags[flags.length - 1];
+        void seekToFrameIndex(target.frameIdx);
+      } else {
+        const next = flags.find((f) => f.frameIdx > curFrameIdx);
+        const target = next ?? flags[0];
+        void seekToFrameIndex(target.frameIdx);
+      }
+    },
+    [flags, curFrameIdx, seekToFrameIndex],
   );
 
   // Keyboard shortcuts
@@ -779,11 +974,20 @@ export default function HowzatCoachAid({
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
         stepFrames(e.shiftKey ? 10 : 1);
+      } else if (e.code === 'KeyF' || e.code === 'KeyM') {
+        e.preventDefault();
+        triggerFlagComposer();
+      } else if (e.code === 'BracketLeft') {
+        e.preventDefault();
+        jumpToAdjacentFlag(-1);
+      } else if (e.code === 'BracketRight') {
+        e.preventDefault();
+        jumpToAdjacentFlag(1);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [stepFrames]);
+  }, [stepFrames, triggerFlagComposer, jumpToAdjacentFlag]);
 
   // Live Camera Recording handlers
   const openCameraModal = async () => {
@@ -1138,39 +1342,218 @@ export default function HowzatCoachAid({
                   <span className="inline-block h-3 w-0.5 bg-emerald-400" />
                   Bat Contact 🔊
                 </span>
+                {flags.length > 0 && (
+                  <span className="inline-flex items-center gap-1 text-rose-300 font-bold">
+                    <span>🚩</span>
+                    {flags.length} {flags.length === 1 ? 'Flag' : 'Flags'}
+                  </span>
+                )}
                 <span className="text-slate-400 hidden sm:inline">
-                  Drag bar to scrub smoothly
+                  Drag to scrub · Click tick/flag to jump
                 </span>
               </div>
             </div>
 
-            {/* Precision Frame-by-Frame Jog Bar (made bigger: drag left/right or scroll wheel) */}
+            {/* Precision Frame-by-Frame Jog Bar (drag left/right, click to jump to frame/flag, or scroll wheel) */}
             <canvas
               ref={jogCanvasRef}
               width={1100}
               height={64}
               onPointerDown={(e) => {
+                const canvasEl = e.currentTarget;
                 const startX = e.clientX;
                 const startIdx = curFrameIdx;
+                let dragged = false;
                 setPlaying(false);
-                e.currentTarget.setPointerCapture(e.pointerId);
+                canvasEl.setPointerCapture(e.pointerId);
                 const onMove = (me: PointerEvent) => {
+                  if (Math.abs(me.clientX - startX) > 4) dragged = true;
                   const d = Math.round((startX - me.clientX) / 16);
                   void seekToFrameIndex(startIdx + d);
                 };
-                const onUp = () => {
+                const onUp = (ue: PointerEvent) => {
                   window.removeEventListener('pointermove', onMove);
                   window.removeEventListener('pointerup', onUp);
+                  if (!dragged) {
+                    const rect = canvasEl.getBoundingClientRect();
+                    const clickOffsetFrames = Math.round(
+                      (ue.clientX - (rect.left + rect.width / 2)) / 16,
+                    );
+                    if (clickOffsetFrames !== 0) {
+                      void seekToFrameIndex(startIdx + clickOffsetFrames);
+                    }
+                  }
                 };
                 window.addEventListener('pointermove', onMove);
                 window.addEventListener('pointerup', onUp);
               }}
+              onDoubleClick={() => triggerFlagComposer()}
               onWheel={(e) => {
                 e.preventDefault();
                 stepFrames(Math.sign(e.deltaY || e.deltaX));
               }}
               className="h-16 w-full cursor-ew-resize rounded-xl border border-white/10 bg-[#12161f] shadow-inner touch-none select-none transition hover:border-amber-400/50"
             />
+
+            {/* Inline Quick-Tag Flag Composer (opens when pressing F or clicking 🚩 Flag) */}
+            {flagEditorOpen && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/35 bg-slate-950/95 px-3 py-2 shadow-lg">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-rose-300 mr-1">
+                    🚩 Frame {curFrameIdx + 1}:
+                  </span>
+                  {FLAG_PRESETS.map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => {
+                        upsertFlagAtCurrentFrame(p.label, p.color);
+                        setFlagDraftLabel(p.label);
+                        setFlagDraftColor(p.color);
+                        setFlagEditorOpen(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-slate-900 hover:bg-slate-800 px-2 py-1 text-[11px] font-bold text-slate-100 transition"
+                      style={{ borderColor: `${p.color}66` }}
+                    >
+                      <span>{p.icon}</span>
+                      <span>{p.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    upsertFlagAtCurrentFrame(flagDraftLabel, flagDraftColor);
+                    setFlagEditorOpen(false);
+                  }}
+                  className="flex flex-wrap items-center gap-1.5"
+                >
+                  <input
+                    ref={flagInputRef}
+                    type="text"
+                    value={flagDraftLabel}
+                    onChange={(e) => setFlagDraftLabel(e.target.value)}
+                    placeholder="Custom tag or note..."
+                    maxLength={36}
+                    className="w-40 sm:w-48 rounded-lg border border-white/15 bg-slate-900 px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+                  />
+                  <div className="flex items-center gap-1 px-1">
+                    {FLAG_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => {
+                          setFlagDraftColor(c);
+                          upsertFlagAtCurrentFrame(flagDraftLabel || 'Flag', c);
+                        }}
+                        style={{ backgroundColor: c }}
+                        className={`h-3.5 w-3.5 rounded-full transition ${
+                          flagDraftColor === c ? 'ring-2 ring-white scale-110' : 'opacity-65 hover:opacity-100'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-amber-400 hover:bg-amber-300 px-2.5 py-1 text-[11px] font-black text-slate-950 transition"
+                  >
+                    Save
+                  </button>
+                  {currentFrameFlag && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        removeFlagById(currentFrameFlag.id);
+                        setFlagEditorOpen(false);
+                      }}
+                      className="rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/30 px-2 py-1 text-[11px] font-bold text-rose-200 transition"
+                    >
+                      Remove
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setFlagEditorOpen(false)}
+                    className="rounded-lg px-1.5 py-1 text-xs font-bold text-slate-400 hover:text-white transition"
+                    title="Close"
+                  >
+                    ✕
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* Saved Coaching Flags Pill Strip (jump straight to any flagged frame across the clip) */}
+            {flags.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-0.5">
+                  Flags:
+                </span>
+                {flags.map((fl) => {
+                  const isAtFlag = Math.abs(curFrameIdx - fl.frameIdx) <= 0;
+                  return (
+                    <div
+                      key={fl.id}
+                      className={`group inline-flex items-center rounded-lg border text-[11px] transition ${
+                        isAtFlag
+                          ? 'bg-slate-800/95 ring-1 ring-white/40 shadow'
+                          : 'bg-slate-950/80 hover:bg-slate-800/80'
+                      }`}
+                      style={{
+                        borderColor: isAtFlag ? fl.color : `${fl.color}55`,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlaying(false);
+                          void seekToFrameIndex(fl.frameIdx);
+                        }}
+                        onDoubleClick={() => {
+                          setPlaying(false);
+                          void seekToFrameIndex(fl.frameIdx);
+                          setFlagDraftLabel(fl.label);
+                          setFlagDraftColor(fl.color);
+                          setFlagEditorOpen(true);
+                        }}
+                        title={`Jump to Frame ${fl.frameIdx + 1} (${formatFlagTime(fl.time)}) — double-click to edit`}
+                        className="inline-flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 text-left"
+                      >
+                        <span
+                          className="inline-block h-2 w-2 rounded-full shrink-0"
+                          style={{ backgroundColor: fl.color }}
+                        />
+                        <span className="font-bold text-slate-100">{fl.label}</span>
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {formatFlagTime(fl.time)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFlagById(fl.id);
+                        }}
+                        title="Remove flag"
+                        className="pr-1.5 pl-0.5 py-0.5 text-[10px] text-slate-500 hover:text-rose-400 transition"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+                {flags.length >= 2 && (
+                  <button
+                    type="button"
+                    onClick={() => persistFlags(() => [])}
+                    className="ml-auto text-[10px] font-bold text-slate-500 hover:text-rose-300 transition px-1.5 py-0.5"
+                  >
+                    Clear flags
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Transport + Biomechanics & Telestrator Controls */}
             <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
@@ -1257,6 +1640,42 @@ export default function HowzatCoachAid({
                     </button>
                   ))}
                 </div>
+
+                {/* Flag Current Frame + Prev/Next Flag Jump */}
+                <button
+                  type="button"
+                  onClick={triggerFlagComposer}
+                  title="Flag or edit coaching note at current frame (Shortcut: F)"
+                  className={`rounded-xl px-2.5 py-1.5 text-xs font-bold border transition flex items-center gap-1 ml-0.5 ${
+                    currentFrameFlag
+                      ? 'bg-rose-500/20 border-rose-400/60 text-rose-200 shadow-sm'
+                      : 'bg-slate-950/90 hover:bg-slate-800 border-white/10 text-slate-200'
+                  }`}
+                >
+                  <span>🚩</span>
+                  <span>{currentFrameFlag ? 'Edit Flag' : 'Flag'}</span>
+                </button>
+                {flags.length > 0 && (
+                  <div className="inline-flex items-center rounded-xl bg-slate-950/90 border border-white/10 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => jumpToAdjacentFlag(-1)}
+                      title="Previous Flag (Shortcut: [)"
+                      className="px-2 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-800 hover:text-white transition"
+                    >
+                      ◀🚩
+                    </button>
+                    <span className="h-3.5 w-px bg-white/10" />
+                    <button
+                      type="button"
+                      onClick={() => jumpToAdjacentFlag(1)}
+                      title="Next Flag (Shortcut: ])"
+                      className="px-2 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-800 hover:text-white transition"
+                    >
+                      🚩▶
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Compact Layer & Telestrator Pills */}

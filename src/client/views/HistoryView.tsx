@@ -100,36 +100,42 @@ export default function HistoryView({
   };
 
   return (
-    <div className="min-h-dvh bg-[#071327] text-white">
-      <div className="mx-auto max-w-7xl px-4 py-4 md:px-6 md:py-6">
-        <div className="mb-6 overflow-hidden rounded-[24px] border border-white/10 bg-gradient-to-br from-[#0a1d3f] via-[#0b234d] to-[#081327] shadow-2xl">
-          <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-[260px_1fr] lg:gap-6 lg:p-6 xl:grid-cols-[300px_1fr]">
-            <div className="flex flex-col items-center justify-center rounded-[22px] border border-white/10 bg-white/5 p-5 text-center backdrop-blur">
-              <div className="mb-4 flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-white/15 bg-transparent shadow-xl sm:h-32 sm:w-32 lg:h-36 lg:w-36">
+    <div className="min-h-dvh bg-[radial-gradient(ellipse_at_top,_#0c1e3e_0%,_#060d1b_55%,_#040811_100%)] text-white">
+      <div className="mx-auto max-w-7xl px-4 py-5 md:px-6 md:py-7">
+        <div className="mb-7 overflow-hidden rounded-[28px] border border-white/10 bg-slate-900/75 shadow-[0_25px_70px_-15px_rgba(0,0,0,0.8)] backdrop-blur-2xl">
+          <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[270px_1fr] lg:gap-6">
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-slate-950/60 p-5 text-center">
+              <div className="mb-4 flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border-2 border-white/15 bg-slate-900 shadow-xl ring-4 ring-white/5 sm:h-28 sm:w-28">
                 <img
                   src="/mvp-logo.png"
                   alt="MVP Cricket Academy"
-                  className="h-full w-full scale-[2.6] object-contain"
+                  className="h-full w-full scale-[2.5] object-contain"
                 />
               </div>
 
-              <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-red-300 sm:text-xs">
+              <p className="text-[10px] font-black uppercase tracking-[0.25em] text-sky-300">
                 MVP Cricket Academy
               </p>
 
-              <h1 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl xl:text-4xl">
-                Academy Match Simulation
+              <h1 className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">
+                Performance Hub
               </h1>
 
-              <p className="mt-3 text-sm leading-6 text-slate-300 sm:text-base">
-                Manage live field setups, open coach and display views, and keep
-                session history in one place.
+              <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                Tactical field simulation, real-time iPad student displays & AI biomechanics.
               </p>
 
-              <div className="mt-6 flex flex-wrap gap-3">
+              <div className="mt-5 flex flex-wrap justify-center gap-2 w-full">
+                <button
+                  onClick={() => onNavigate('/howzat')}
+                  className="w-full rounded-xl border border-amber-400/50 bg-gradient-to-r from-amber-400 to-yellow-300 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-slate-950 transition hover:from-amber-300 hover:to-yellow-200 shadow-lg shadow-amber-500/20"
+                >
+                  🏏 Open Howzat AI Studio
+                </button>
+
                 <button 
                   onClick={logout}
-                  className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-red-400 transition hover:bg-red-500/20"
+                  className="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-300 transition hover:bg-rose-500/20 hover:text-rose-200 hover:border-rose-500/30"
                 >
                   Sign Out
                 </button>
@@ -137,70 +143,69 @@ export default function HistoryView({
                 {role === 'admin' && (
                   <button 
                     onClick={() => onNavigate('/admin')}
-                    className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-500 transition hover:bg-amber-500/20"
+                    className="flex-1 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-amber-300 transition hover:bg-amber-500/20"
                   >
-                    Admin Portal
+                    Admin
                   </button>
                 )}
               </div>
             </div>
 
-            <div className="flex flex-col justify-between rounded-[22px] border border-white/10 bg-white/5 p-5 backdrop-blur sm:p-6">
+            <div className="flex flex-col justify-between rounded-2xl border border-white/10 bg-slate-950/45 p-5 sm:p-6">
               <div className="mb-5">
-                <div className="mb-3 inline-flex rounded-full border border-red-400/30 bg-red-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-red-200 sm:text-xs">
+                <div className="mb-2.5 inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   Academy Control Center
                 </div>
 
                 <h2 className="text-2xl font-black tracking-tight sm:text-3xl lg:text-4xl">
-                  Set fields faster. Train smarter.
+                  Set fields faster. Analyze every shot.
                 </h2>
 
-                <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-300 sm:text-base sm:leading-7">
-                  Launch a new session, control the field in coach mode, and
-                  push the live field to the display screen instantly for
-                  players.
+                <p className="mt-2.5 max-w-2xl text-sm leading-relaxed text-slate-400">
+                  Launch a live coaching session to control 2D/3D field placements, run Wagon Wheel target drills, or push Howzat AI weight-transfer biomechanics to the net iPad.
                 </p>
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-                <div className="rounded-2xl border border-white/10 bg-[#091a37] p-4 shadow-lg sm:p-5">
-                  <label className="mb-3 block text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">
-                    Create New Session
+              <div className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+                <div className="rounded-2xl border border-white/10 bg-slate-900/90 p-4 shadow-lg">
+                  <label className="mb-2.5 block text-xs font-black uppercase tracking-[0.18em] text-slate-400">
+                    Launch New Coaching Session
                   </label>
 
-                  <div className="flex flex-col gap-3 md:flex-row">
+                  <div className="flex flex-col gap-2.5 md:flex-row">
                     <input
                       value={newTitle}
                       onChange={(e) => setNewTitle(e.target.value)}
-                      placeholder="e.g. Left-hand batter powerplay drill"
-                      className="flex-1 rounded-xl border border-white/10 bg-[#061126] px-4 py-3 text-white outline-none placeholder:text-slate-500 focus:border-green-400"
+                      placeholder="e.g. Left-hand batter powerplay & front-foot drive drill"
+                      className="flex-1 rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-sky-400/70"
                     />
 
                     <button
                       disabled={saving}
                       onClick={startNewSession}
-                      className="rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white shadow hover:bg-emerald-500 disabled:opacity-60"
+                      className="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 px-6 py-3 text-sm font-black uppercase tracking-wider text-slate-950 shadow-lg shadow-emerald-500/20 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-60 transition"
                     >
-                      {saving ? 'Creating...' : 'New Session'}
+                      {saving ? 'Creating...' : '+ New Session'}
                     </button>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-white/10 bg-[#091a37] p-4 text-center shadow-lg sm:p-5">
-                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/90 p-4 text-center shadow-lg flex flex-col justify-center">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
                       Total Sessions
                     </div>
-                    <div className="mt-2 text-3xl font-black text-white sm:text-4xl">
+                    <div className="mt-1 text-3xl font-black text-white tabular-nums">
                       {sessions.length}
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-white/10 bg-[#091a37] p-4 text-center shadow-lg sm:p-5">
-                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                      Active
+                  <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-center shadow-lg flex flex-col justify-center">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                      Active Live
                     </div>
-                    <div className="mt-2 text-3xl font-black text-emerald-400 sm:text-4xl">
+                    <div className="mt-1 text-3xl font-black text-emerald-400 tabular-nums">
                       {sessions.filter((s) => s.status === 'active').length}
                     </div>
                   </div>
@@ -209,7 +214,7 @@ export default function HistoryView({
             </div>
           </div>
 
-          <div className="h-2 w-full bg-gradient-to-r from-red-600 via-white to-blue-500" />
+          <div className="h-1.5 w-full bg-gradient-to-r from-sky-500 via-amber-400 to-emerald-500" />
         </div>
 
         <div className="mb-4">

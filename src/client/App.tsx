@@ -3,6 +3,7 @@ import CoachView from './views/CoachView';
 import DisplayView from './views/DisplayView';
 import HistoryView from './views/HistoryView';
 import AdminView from './views/AdminView';
+import HowzatView from './views/HowzatView';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import LoginView from './views/LoginView';
 
@@ -11,6 +12,12 @@ function AppRoutes() {
   const { user, loading } = useAuth();
 
   useEffect(() => {
+    // Firebase Auth permits 'localhost' by default, not '127.0.0.1'
+    if (window.location.hostname === '127.0.0.1') {
+      const target = window.location.href.replace('://127.0.0.1', '://localhost');
+      window.location.replace(target);
+      return;
+    }
     const handlePopState = () => setRoute(window.location.pathname);
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -21,6 +28,16 @@ function AppRoutes() {
     setRoute(path);
   };
 
+  // Standalone Howzat Studio & Display View are accessible without requiring Google Sign-In
+  if (route === '/howzat') {
+    return <HowzatView onNavigate={navigate} />;
+  }
+
+  if (route.startsWith('/display/')) {
+    const sessionId = route.split('/display/')[1];
+    return <DisplayView sessionId={sessionId} onNavigate={navigate} />;
+  }
+
   if (loading) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center bg-[#071327]">
@@ -30,15 +47,9 @@ function AppRoutes() {
     );
   }
 
-  // Display View is public (no authentication required)
-  if (route.startsWith('/display/')) {
-    const sessionId = route.split('/display/')[1];
-    return <DisplayView sessionId={sessionId} onNavigate={navigate} />;
-  }
-
   // All other views require authentication
   if (!user) {
-    return <LoginView />;
+    return <LoginView onNavigate={navigate} />;
   }
 
   if (route.startsWith('/coach/')) {
@@ -48,6 +59,10 @@ function AppRoutes() {
 
   if (route === '/admin') {
     return <AdminView onNavigate={navigate} />;
+  }
+
+  if (route === '/howzat') {
+    return <HowzatView onNavigate={navigate} />;
   }
 
   return <HistoryView onNavigate={navigate} />;

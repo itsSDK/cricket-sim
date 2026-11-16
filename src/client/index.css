@@ -18,5 +18,66 @@
     @apply antialiased;
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: auto;
+    background-color: #050b16;
+    color: #f8fafc;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
+}
+
+/* Modern sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.45);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.7);
+}
+
+/* iPhone Duo & Foldable Viewport Segment Support */
+@media (horizontal-viewport-segments: 2) {
+  :root {
+    --duo-fold-width: 16px;
+    --duo-left-screen-width: env(viewport-segment-width 0 0, 50vw);
+    --duo-right-screen-width: env(viewport-segment-width 1 0, 50vw);
+  }
+}
+
+@media (vertical-viewport-segments: 2) {
+  :root {
+    --duo-fold-height: 16px;
+    --duo-top-screen-height: env(viewport-segment-height 0 0, 50vh);
+    --duo-bottom-screen-height: env(viewport-segment-height 0 1, 50vh);
+  }
+}
+
+/* Subtle physical hinge crease effect */
+.duo-hinge-vertical {
+  background: linear-gradient(
+    to right,
+    rgba(15, 23, 42, 0.95),
+    rgba(30, 41, 59, 0.4) 30%,
+    rgba(51, 65, 85, 0.8) 50%,
+    rgba(30, 41, 59, 0.4) 70%,
+    rgba(15, 23, 42, 0.95)
+  );
+  box-shadow: inset 1px 0 2px rgba(0, 0, 0, 0.5), inset -1px 0 2px rgba(0, 0, 0, 0.5);
+}
+
+.duo-hinge-horizontal {
+  background: linear-gradient(
+    to bottom,
+    rgba(15, 23, 42, 0.95),
+    rgba(30, 41, 59, 0.4) 30%,
+    rgba(51, 65, 85, 0.8) 50%,
+    rgba(30, 41, 59, 0.4) 70%,
+    rgba(15, 23, 42, 0.95)
+  );
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5), inset 0 -1px 2px rgba(0, 0, 0, 0.5);
 }

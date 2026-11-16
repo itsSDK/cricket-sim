@@ -6,6 +6,7 @@
   "scripts": {
     "dev:frontend": "vite",
     "build:frontend": "tsc && vite build",
+    "dev:videos": "node scripts/howzat-video-server.cjs",
     "dev:backend": "wrangler dev",
     "dev": "npm run build:frontend && npm run dev:backend",
     "deploy": "npm run build:frontend && wrangler deploy"

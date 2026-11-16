@@ -9,6 +9,38 @@ export interface Position {
   isFixed?: boolean;
 }
 
+export interface HowzatShotSummary {
+  index: number;
+  timeSec: number;
+  stancePct: number | null;
+  contactPct: number | null;
+  peakPct: number | null;
+  stride: number;
+  followThrough: number;
+  heard: boolean;
+  grade: 'strong' | 'ok' | 'weak';
+}
+
+export interface HowzatSyncPayload {
+  playerName: string;
+  clipName: string;
+  bowlerSide: 'left' | 'right';
+  currentForwardPct: number | null;
+  stanceAvgPct: number | null;
+  contactAvgPct: number | null;
+  headStabilityScore: number | null;
+  frontKneeAngle: number | null;
+  backKneeAngle: number | null;
+  strideLengthTorso: number | null;
+  currentPhase: string;
+  coachNotes: string;
+  coachingCue: string;
+  shots: HowzatShotSummary[];
+  selectedShotIndex: number | null;
+  snapshotDataUrl?: string | null;
+  updatedAt: number;
+}
+
 export interface SessionState {
   sessionId: string;
   title: string;
@@ -23,7 +55,7 @@ export interface SessionState {
     right: Position[];
     left: Position[];
   };
-  mode: 'fielding' | 'wagonWheel';
+  mode: 'fielding' | 'wagonWheel' | 'howzat';
   wagonWheelConfig: {
     targetScore: number;
     ballsAllocated: number;
@@ -32,6 +64,7 @@ export interface SessionState {
     advancedSlices?: number[];
   };
   drawnPaths?: {x: number, y: number}[][];
+  howzatConfig?: HowzatSyncPayload;
 }
 
 export type ClientMessage =
@@ -44,9 +77,10 @@ export type ClientMessage =
   | { type: 'REQUEST_STATE_SYNC' }
   | { type: 'UNDO_LAST_BALL' }
   | { type: 'RESET_SESSION' }
-  | { type: 'SET_MODE'; mode: 'fielding' | 'wagonWheel' }
+  | { type: 'SET_MODE'; mode: 'fielding' | 'wagonWheel' | 'howzat' }
   | { type: 'UPDATE_WAGON_WHEEL'; targetScore: number; ballsAllocated: number; slices: number[]; isAdvancedMode?: boolean; advancedSlices?: number[] }
   | { type: 'UPDATE_DRAWING'; paths: {x: number, y: number}[][] }
+  | { type: 'UPDATE_HOWZAT'; payload: HowzatSyncPayload }
   | { type: 'PING' };
 
 export type ServerMessage =
@@ -79,9 +113,10 @@ export type ServerMessage =
   | { type: 'LAST_BALL_UNDONE'; timestamp: number; ballNumber: number; totalRuns: number }
   | { type: 'SESSION_RESET'; timestamp: number }
   | { type: 'SESSION_STATUS'; timestamp: number; status: string; connectedClients: number }
-  | { type: 'MODE_CHANGED'; timestamp: number; mode: 'fielding' | 'wagonWheel' }
+  | { type: 'MODE_CHANGED'; timestamp: number; mode: 'fielding' | 'wagonWheel' | 'howzat' }
   | { type: 'WAGON_WHEEL_UPDATED'; timestamp: number; targetScore: number; ballsAllocated: number; slices: number[]; isAdvancedMode?: boolean; advancedSlices?: number[] }
-  | { type: 'DRAWING_UPDATED'; timestamp: number; paths: {x: number, y: number}[][] };
+  | { type: 'DRAWING_UPDATED'; timestamp: number; paths: {x: number, y: number}[][] }
+  | { type: 'HOWZAT_UPDATED'; timestamp: number; payload: HowzatSyncPayload };
 
 export interface DbSession {
   id: string;

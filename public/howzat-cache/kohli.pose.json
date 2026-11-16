@@ -1,0 +1,1 @@
+{"name":"kohli","src":"Example videos/kohli-broadcast.mp4","roi":{"x":0.3,"y":0.15,"w":0.4,"h":0.75},"cw":384,"ch":405,"fps":30,"n":300,"per":100,"model":"pose_landmarker_full","secs":10.6505,"t0":0,"t1":10}

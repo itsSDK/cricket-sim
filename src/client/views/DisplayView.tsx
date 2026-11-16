@@ -7,6 +7,7 @@ import {
 } from '../../shared/types';
 import { audioService } from '../services/AudioService';
 import { WebSocketService } from '../services/WebSocketService';
+import HowzatStudentBoard from '../howzat/HowzatStudentBoard';
 
 interface SessionApiResponse {
   session: {
@@ -241,6 +242,13 @@ export default function DisplayView({
         );
       } else if (msg.type === 'DRAWING_UPDATED') {
         setState((prev) => prev ? { ...prev, drawnPaths: msg.paths } : prev);
+      } else if (msg.type === 'HOWZAT_UPDATED') {
+        setState((prev) => prev ? { ...prev, howzatConfig: msg.payload } : prev);
+        if (msg.payload.coachNotes) {
+          audioService.speak(msg.payload.coachNotes);
+        } else if (msg.payload.coachingCue) {
+          audioService.speak(msg.payload.coachingCue);
+        }
       } else if (msg.type === 'SESSION_ENDED') {
         setState((prev) => (prev ? { ...prev, status: 'completed' } : prev));
       } else if (msg.type === 'PONG') {
@@ -390,7 +398,9 @@ export default function DisplayView({
                </div>
             </div>
 
-            {mode === 'wagonWheel' ? (
+            {mode === 'howzat' ? (
+              <HowzatStudentBoard payload={state?.howzatConfig} />
+            ) : mode === 'wagonWheel' ? (
 
             <div
               className={`relative aspect-square w-full overflow-hidden rounded-full border-[6px] sm:border-8 border-amber-400 bg-[#ffe854] shadow-[0_0_80px_rgba(250,180,0,0.25)] transition-opacity duration-500 ${

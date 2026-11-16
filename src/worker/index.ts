@@ -48,16 +48,49 @@ export default {
       return handleApiRequest(request, env);
     }
 
-    if (env.ASSETS) {
-      const assetResponse = await env.ASSETS.fetch(request);
-      if (assetResponse.status !== 404) return assetResponse;
+    if (url.pathname.startsWith('/howzat-videos/')) {
+      if (env.ASSETS) {
+        const assetRes = await env.ASSETS.fetch(request);
+        if (assetRes.status !== 404 && assetRes.status !== 307) {
+          return assetRes;
+        }
+      }
+      try {
+        const targetUrl = `http://127.0.0.1:8770${url.pathname}`;
+        return await fetch(targetUrl, {
+          method: request.method,
+          headers: request.headers,
+        });
+      } catch {
+        return new Response('Video not found', { status: 404 });
+      }
+    }
 
-      const acceptsHtml = request.headers.get('accept')?.includes('text/html');
+    if (env.ASSETS) {
       const isGet = request.method === 'GET';
       const isAssetLike = /\.[a-zA-Z0-9]+$/.test(url.pathname);
 
-      if (isGet && acceptsHtml && !isAssetLike) {
-        const indexUrl = new URL('/index.html', request.url);
+      // Serve root index HTML directly for known SPA client routes to avoid 307 redirects from ASSETS
+      if (
+        (isGet || request.method === 'HEAD') &&
+        !isAssetLike &&
+        (url.pathname === '/howzat' ||
+          url.pathname.startsWith('/coach/') ||
+          url.pathname.startsWith('/display/') ||
+          url.pathname === '/admin')
+      ) {
+        const indexUrl = new URL('/', request.url);
+        return env.ASSETS.fetch(new Request(indexUrl.toString(), request));
+      }
+
+      const assetResponse = await env.ASSETS.fetch(request);
+      if (assetResponse.status !== 404 && assetResponse.status !== 307) {
+        return assetResponse;
+      }
+
+      const acceptsHtml = request.headers.get('accept')?.includes('text/html');
+      if ((isGet || request.method === 'HEAD') && acceptsHtml && !isAssetLike) {
+        const indexUrl = new URL('/', request.url);
         return env.ASSETS.fetch(new Request(indexUrl.toString(), request));
       }
     }

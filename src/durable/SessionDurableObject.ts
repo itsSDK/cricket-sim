@@ -538,6 +538,32 @@ export class SessionDurableObject implements DurableObject {
         break;
       }
 
+      case 'UPDATE_HOWZAT': {
+        session.howzatConfig = msg.payload;
+        await this.saveSessionState(session);
+
+        this.broadcast({
+          type: 'HOWZAT_UPDATED',
+          timestamp,
+          payload: msg.payload,
+        });
+
+        await this.logEvent(
+          session.sessionId,
+          timestamp,
+          connectionData?.role ?? 'coach',
+          'HOWZAT_UPDATED',
+          null,
+          {
+            playerName: msg.payload.playerName,
+            clipName: msg.payload.clipName,
+            contactAvgPct: msg.payload.contactAvgPct,
+            shotsCount: msg.payload.shots?.length ?? 0,
+          },
+        );
+        break;
+      }
+
       case 'UNDO_LAST_BALL': {
         const lastBall = await this.env.DB.prepare(
           'SELECT * FROM balls WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1',

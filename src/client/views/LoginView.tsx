@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 
-export default function LoginView() {
+export default function LoginView({ onNavigate }: { onNavigate?: (path: string) => void }) {
   const { login, authError } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -23,10 +23,14 @@ export default function LoginView() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center bg-[#071327] px-4 text-white">
-      <div className="w-full max-w-md overflow-hidden rounded-[32px] border border-white/10 bg-gradient-to-br from-[#0a1d3f] via-[#0b234d] to-[#081327] shadow-2xl">
-        <div className="p-8 text-center sm:p-12">
-          <div className="mx-auto mb-6 flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border-4 border-white/10 bg-white/5 shadow-xl">
+    <div className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#040914] px-4 text-white">
+      {/* Ambient background glow orbs */}
+      <div className="pointer-events-none absolute -top-40 left-1/2 h-96 w-96 -translate-x-1/2 rounded-full bg-sky-500/15 blur-[120px]" />
+      <div className="pointer-events-none absolute bottom-0 right-1/4 h-80 w-80 rounded-full bg-amber-500/10 blur-[120px]" />
+
+      <div className="relative z-10 w-full max-w-md overflow-hidden rounded-[28px] border border-white/10 bg-slate-900/75 shadow-[0_25px_70px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
+        <div className="p-8 text-center sm:p-10">
+          <div className="mx-auto mb-5 flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border-2 border-white/15 bg-slate-950/60 shadow-xl ring-4 ring-white/5">
             <img
               src="/mvp-logo.png"
               alt="MVP Cricket Academy"
@@ -34,19 +38,19 @@ export default function LoginView() {
             />
           </div>
 
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-red-400">
-            Academy Portal
-          </p>
-          <h1 className="text-3xl font-black tracking-tight text-white mb-6">
-            Coach Sign In
+          <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-sky-400/30 bg-sky-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-sky-300">
+            MVP Cricket Performance Lab
+          </div>
+          <h1 className="text-3xl font-black tracking-tight text-white mb-3">
+            Coach Command Portal
           </h1>
 
-          <p className="mb-8 text-sm leading-6 text-slate-300">
-            Welcome back! Please sign in with your authorized Google account to manage matches and access the coaching dashboard.
+          <p className="mb-7 text-sm leading-relaxed text-slate-400">
+            Sign in to manage live tactical field placements, wagon-wheel scoring drills, or launch the AI Biomechanics Studio.
           </p>
 
           {(error || authError) && (
-            <div className="mb-6 rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
+            <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs font-medium text-rose-200">
               {error || authError}
             </div>
           )}
@@ -54,7 +58,7 @@ export default function LoginView() {
           <button
             onClick={handleLogin}
             disabled={loggingIn}
-            className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white px-6 py-4 font-bold text-slate-900 shadow-lg transition hover:bg-slate-100 disabled:opacity-70"
+            className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white px-6 py-3.5 text-sm font-black text-slate-950 shadow-lg transition hover:bg-slate-100 active:scale-[0.99] disabled:opacity-70"
           >
             <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
               <path
@@ -76,8 +80,18 @@ export default function LoginView() {
             </svg>
             {loggingIn ? 'Connecting...' : 'Sign in with Google'}
           </button>
+
+          {onNavigate && (
+            <button
+              onClick={() => onNavigate('/howzat')}
+              className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-400/40 bg-gradient-to-r from-amber-400/20 to-yellow-300/15 px-6 py-3.5 text-xs font-black uppercase tracking-wider text-amber-300 shadow-lg shadow-amber-500/10 transition hover:border-amber-400/70 hover:from-amber-400/30 hover:to-yellow-300/25"
+            >
+              <span>🏏</span>
+              <span>Launch Howzat Biomechanics Studio</span>
+            </button>
+          )}
         </div>
-        <div className="h-2 w-full bg-gradient-to-r from-red-600 via-white to-blue-500" />
+        <div className="h-1.5 w-full bg-gradient-to-r from-sky-500 via-amber-400 to-emerald-500" />
       </div>
     </div>
   );

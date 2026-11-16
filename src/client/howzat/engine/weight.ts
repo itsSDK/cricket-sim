@@ -192,13 +192,9 @@ function computeFrameKinematics(
 }
 
 // Biomechanical Kinematic Stabilizer for side-on 2D cricket pose sequences:
-// 1. Intra-frame knee->ankle and elbow->wrist un-crossing (fixes diagonal "pretzel" shins/arms).
-// 2. Temporal Left/Right leg & arm chain continuity (prevents single-frame 2D detectors from flipping
-//    left and right legs/arms mid-stride or mid-swing).
-// 3. Side-on double-latch occlusion protection (when one shin passes behind the other pad and the
-//    detector snaps both ankles onto the same visible leg, preserves the occluded planted foot).
-// 4. Confidence-aware gap bridging + velocity-adaptive filtering (steady in stance, zero lag during fast swings).
-// 5. Anatomical 2-bone segment length clamping (prevents impossible stretched bones).
+// Biomechanical Kinematic Stabilizer for side-on 2D cricket pose sequences:
+// Pure topological chain un-crossing + temporal L/R continuity + 3-frame median despiker.
+// Preserves 100% of real joint positions (never shrinks limbs or deletes fast motion).
 function stabilizePoseSequence(
   times: Float32Array | number[],
   data: Float32Array,
@@ -210,17 +206,27 @@ function stabilizePoseSequence(
   const dist = (a: [number, number], b: [number, number]) =>
     Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-  const lm: ([number, number][] | null)[] = new Array(n);
+  // Geometric 2D segment intersection test (detects crossed X-thighs or crossed shins)
+  const segmentsCross = (
+    a: [number, number],
+    b: [number, number],
+    c: [number, number],
+    d: [number, number],
+  ): boolean => {
+    const ccw = (p1: [number, number], p2: [number, number], p3: [number, number]) =>
+      (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0]);
+    return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  };
+
+  const rawLm: ([number, number][] | null)[] = new Array(n);
   const vis: (number[] | null)[] = new Array(n);
   const realFootL = new Uint8Array(n);
   const realFootR = new Uint8Array(n);
-  const rawAnkleL: ([number, number] | null)[] = new Array(n).fill(null);
-  const rawAnkleR: ([number, number] | null)[] = new Array(n).fill(null);
   const rawTorsos: number[] = [];
 
   for (let i = 0; i < n; i++) {
     if (!(data[i * PER] > 0.5)) {
-      lm[i] = null;
+      rawLm[i] = null;
       vis[i] = null;
       continue;
     }
@@ -231,10 +237,9 @@ function stabilizePoseSequence(
       const vk = data[i * PER + 3 + 3 * k];
       vs[k] = Number.isNaN(vk) ? 0 : vk;
     }
-    lm[i] = pts;
+    rawLm[i] = pts;
     vis[i] = vs;
     if (!Number.isNaN(pts[27][0])) {
-      rawAnkleL[i] = [pts[27][0], pts[27][1]];
       if (
         (!Number.isNaN(pts[29][0]) && dist(pts[27], pts[29]) > 1e-2) ||
         (!Number.isNaN(pts[31][0]) && dist(pts[27], pts[31]) > 1e-2)
@@ -243,7 +248,6 @@ function stabilizePoseSequence(
       }
     }
     if (!Number.isNaN(pts[28][0])) {
-      rawAnkleR[i] = [pts[28][0], pts[28][1]];
       if (
         (!Number.isNaN(pts[30][0]) && dist(pts[28], pts[30]) > 1e-2) ||
         (!Number.isNaN(pts[32][0]) && dist(pts[28], pts[32]) > 1e-2)
@@ -272,35 +276,27 @@ function stabilizePoseSequence(
     V[b] = tv;
   };
 
-  // Pass 1: Intra-frame limb un-crossing (ensure each ankle pairs with the knee above it, and wrist with elbow)
+  // Pass 1: Intra-frame distal limb un-crossing (fixes diagonal stretched shins across a stride)
   for (let i = 0; i < n; i++) {
-    const P = lm[i];
+    const P = rawLm[i];
     const V = vis[i];
     if (!P || !V) continue;
 
-    // Hip -> Knee un-crossing
-    if (!Number.isNaN(P[23][0]) && !Number.isNaN(P[25][0])) {
-      const straightHK = dist(P[23], P[25]) + dist(P[24], P[26]);
-      const crossHK = dist(P[23], P[26]) + dist(P[24], P[25]);
-      if (crossHK + 0.18 * S0 < straightHK) {
-        swapIdx(P, V, 25, 26);
-      }
-    }
-
-    // Knee -> Ankle un-crossing (eliminates stretched diagonal "pretzel" shins)
+    // Knee -> Ankle un-crossing: if shins physically cross or swapping ankles shortens total shin length
     if (!Number.isNaN(P[25][0]) && !Number.isNaN(P[27][0])) {
       const straightKA = dist(P[25], P[27]) + dist(P[26], P[28]);
       const crossKA = dist(P[25], P[28]) + dist(P[26], P[27]);
-      if (crossKA + 0.15 * S0 < straightKA) {
+      const shinsCross =
+        dist(P[25], P[26]) > 0.08 * S0 &&
+        dist(P[27], P[28]) > 0.08 * S0 &&
+        segmentsCross(P[25], P[27], P[26], P[28]);
+      if (crossKA + 0.08 * S0 < straightKA || (shinsCross && crossKA < straightKA + 0.05 * S0)) {
         swapIdx(P, V, 27, 28);
         swapIdx(P, V, 29, 30);
         swapIdx(P, V, 31, 32);
         const rf = realFootL[i];
         realFootL[i] = realFootR[i];
         realFootR[i] = rf;
-        const ra = rawAnkleL[i];
-        rawAnkleL[i] = rawAnkleR[i];
-        rawAnkleR[i] = ra;
       }
     }
 
@@ -308,17 +304,16 @@ function stabilizePoseSequence(
     if (!Number.isNaN(P[13][0]) && !Number.isNaN(P[15][0])) {
       const straightEW = dist(P[13], P[15]) + dist(P[14], P[16]);
       const crossEW = dist(P[13], P[16]) + dist(P[14], P[15]);
-      if (crossEW + 0.18 * S0 < straightEW) {
+      if (crossEW + 0.16 * S0 < straightEW) {
         swapIdx(P, V, 15, 16);
       }
     }
   }
 
-  // Pass 2: Velocity-predicted Left/Right chain continuity across frames & crossings
+  // Pass 2: Temporal Left/Right leg continuity across frames + Hip-to-Knee un-crossing (prevents X-thighs)
   let legRefIdx = -1;
   let velAnkleL: [number, number] = [0, 0];
   let velAnkleR: [number, number] = [0, 0];
-  let armRefIdx = -1;
 
   const clampVel = (vx: number, vy: number, maxSpd: number): [number, number] => {
     const m = Math.hypot(vx, vy);
@@ -327,24 +322,24 @@ function stabilizePoseSequence(
   };
 
   for (let i = 0; i < n; i++) {
-    const C = lm[i];
+    const C = rawLm[i];
     const VC = vis[i];
     if (!C || !VC) continue;
 
     const ankleSep = dist(C[27], C[28]);
     const kneeSep = dist(C[25], C[26]);
-    if (legRefIdx >= 0 && times[i] - times[legRefIdx] < 0.55) {
+    if (legRefIdx >= 0 && times[i] - times[legRefIdx] < 0.45) {
       const dt = Math.max(1 / 240, times[i] - times[legRefIdx]);
-      const Q = lm[legRefIdx]!;
-      if (ankleSep > 0.13 * S0 || kneeSep > 0.13 * S0) {
-        const predDt = Math.min(dt, 0.14);
+      const Q = rawLm[legRefIdx]!;
+      if (ankleSep > 0.14 * S0 || kneeSep > 0.14 * S0) {
+        const predDt = Math.min(dt, 0.12);
         const predL: [number, number] = [
-          Q[27][0] + velAnkleL[0] * predDt * 0.55,
-          Q[27][1] + velAnkleL[1] * predDt * 0.55,
+          Q[27][0] + velAnkleL[0] * predDt * 0.5,
+          Q[27][1] + velAnkleL[1] * predDt * 0.5,
         ];
         const predR: [number, number] = [
-          Q[28][0] + velAnkleR[0] * predDt * 0.55,
-          Q[28][1] + velAnkleR[1] * predDt * 0.55,
+          Q[28][0] + velAnkleR[0] * predDt * 0.5,
+          Q[28][1] + velAnkleR[1] * predDt * 0.5,
         ];
         const keepLeg =
           dist(C[25], Q[25]) +
@@ -356,7 +351,7 @@ function stabilizePoseSequence(
           1.5 * dist(C[28], predL) +
           dist(C[25], Q[26]) +
           1.5 * dist(C[27], predR);
-        if (swapLeg + 0.11 * S0 < keepLeg) {
+        if (swapLeg + 0.1 * S0 < keepLeg) {
           swapIdx(C, VC, 25, 26);
           swapIdx(C, VC, 27, 28);
           swapIdx(C, VC, 29, 30);
@@ -364,276 +359,120 @@ function stabilizePoseSequence(
           const rf = realFootL[i];
           realFootL[i] = realFootR[i];
           realFootR[i] = rf;
-          const ra = rawAnkleL[i];
-          rawAnkleL[i] = rawAnkleR[i];
-          rawAnkleR[i] = ra;
-          if (dist(C[24], Q[23]) + dist(C[23], Q[24]) < dist(C[23], Q[23]) + dist(C[24], Q[24])) {
-            swapIdx(C, VC, 23, 24);
-          }
         }
       }
-      if (ankleSep >= 0.15 * S0) {
+      if (ankleSep >= 0.16 * S0) {
         velAnkleL = clampVel((C[27][0] - Q[27][0]) / dt, (C[27][1] - Q[27][1]) / dt, 5.5 * S0);
         velAnkleR = clampVel((C[28][0] - Q[28][0]) / dt, (C[28][1] - Q[28][1]) / dt, 5.5 * S0);
         legRefIdx = i;
       }
-    } else if (ankleSep >= 0.15 * S0) {
+    } else if (ankleSep >= 0.16 * S0) {
       velAnkleL = [0, 0];
       velAnkleR = [0, 0];
       legRefIdx = i;
     }
 
-    // Arm chain continuity during backlift & swing
-    const wristSep = dist(C[15], C[16]);
-    const elbowSep = dist(C[13], C[14]);
-    if (armRefIdx >= 0 && times[i] - times[armRefIdx] < 0.35) {
-      const Q = lm[armRefIdx]!;
-      if (wristSep > 0.14 * S0 || elbowSep > 0.14 * S0) {
-        const keepArm =
-          dist(C[13], Q[13]) +
-          1.3 * dist(C[15], Q[15]) +
-          dist(C[14], Q[14]) +
-          1.3 * dist(C[16], Q[16]);
-        const swapArm =
-          dist(C[14], Q[13]) +
-          1.3 * dist(C[16], Q[15]) +
-          dist(C[13], Q[14]) +
-          1.3 * dist(C[15], Q[16]);
-        if (swapArm + 0.14 * S0 < keepArm) {
-          swapIdx(C, VC, 13, 14);
-          swapIdx(C, VC, 15, 16);
-        }
+    // Always align Hips (23, 24) with Knees (25, 26) so thighs NEVER form an X across the pelvis!
+    if (!Number.isNaN(C[23][0]) && !Number.isNaN(C[25][0])) {
+      const straightHK = dist(C[23], C[25]) + dist(C[24], C[26]);
+      const crossHK = dist(C[23], C[26]) + dist(C[24], C[25]);
+      const thighsCross =
+        dist(C[23], C[24]) > 0.05 * S0 &&
+        dist(C[25], C[26]) > 0.05 * S0 &&
+        segmentsCross(C[23], C[25], C[24], C[26]);
+      if (thighsCross || crossHK + 0.06 * S0 < straightHK) {
+        swapIdx(C, VC, 23, 24);
       }
-      if (wristSep >= 0.14 * S0 || elbowSep >= 0.14 * S0) {
-        armRefIdx = i;
-      }
-    } else if (wristSep >= 0.14 * S0 || elbowSep >= 0.14 * S0) {
-      armRefIdx = i;
     }
   }
 
-  // Pass 3: Detect side-on double-latch occlusion (when both ankles collapse onto the same visible leg)
-  // If feet were separated on the prior valid frame and one ankle suddenly teleports onto the other
-  // ankle faster than humanly possible (> 7.5 torso/s), mark the teleporting leg as occluded so Pass 4
-  // smoothly bridges it across the occlusion window instead of collapsing the base of support.
-  let anchorIdx = -1;
-  let occludedSide: 'l' | 'r' | null = null;
-  let occludedRun = 0;
-  for (let i = 0; i < n; i++) {
-    const C = lm[i];
-    const VC = vis[i];
-    if (!C || !VC) {
-      occludedSide = null;
-      occludedRun = 0;
+  // Pass 3: Bridge brief (<= 5 frames) confirmed double-latch pad occlusions where both ankles
+  // suddenly collapse onto the same pad and immediately separate back to their prior positions.
+  let idx = 1;
+  while (idx < n - 1) {
+    const prev = rawLm[idx - 1];
+    const cur = rawLm[idx];
+    if (!prev || !cur || dist(prev[27], prev[28]) < 0.32 * S0 || dist(cur[27], cur[28]) >= 0.12 * S0) {
+      idx++;
       continue;
     }
-    const ankleDist = dist(C[27], C[28]);
-    if (occludedSide && occludedRun < 15 && ankleDist < 0.18 * S0) {
-      // Still collapsed onto the visible leg during the same brief occlusion
-      const knK = occludedSide === 'l' ? 25 : 26;
-      const anK = occludedSide === 'l' ? 27 : 28;
-      VC[anK] = Math.min(VC[anK], 0.05);
-      if (dist(C[25], C[26]) < 0.18 * S0) VC[knK] = Math.min(VC[knK], 0.05);
-      occludedRun++;
-      continue;
+    let end = idx;
+    while (
+      end < n &&
+      end - idx < 5 &&
+      rawLm[end] &&
+      dist(rawLm[end]![27], rawLm[end]![28]) < 0.14 * S0
+    ) {
+      end++;
     }
-    occludedSide = null;
-    occludedRun = 0;
-
-    if (anchorIdx >= 0) {
-      const dt = Math.max(1 / 240, times[i] - times[anchorIdx]);
-      if (dt < 0.25) {
-        const Q = lm[anchorIdx]!;
-        const prevSep = dist(Q[27], Q[28]);
-        if (prevSep > 0.28 * S0 && ankleDist < 0.15 * S0) {
-          const dL = dist(C[27], Q[27]);
-          const dR = dist(C[28], Q[28]);
-          const maxJump = Math.max(0.24 * S0, 7.2 * S0 * dt);
-          if (dL > maxJump && dL > 1.7 * dR) {
-            occludedSide = 'l';
-            occludedRun = 1;
-            VC[27] = Math.min(VC[27], 0.05);
-            if (dist(C[25], C[26]) < 0.18 * S0) VC[25] = Math.min(VC[25], 0.05);
-            continue;
-          } else if (dR > maxJump && dR > 1.7 * dL) {
-            occludedSide = 'r';
-            occludedRun = 1;
-            VC[28] = Math.min(VC[28], 0.05);
-            if (dist(C[25], C[26]) < 0.18 * S0) VC[26] = Math.min(VC[26], 0.05);
-            continue;
+    const next = end < n ? rawLm[end] : null;
+    if (
+      next &&
+      times[end] - times[idx - 1] <= 0.22 &&
+      dist(next[27], next[28]) > 0.28 * S0
+    ) {
+      const jumpL = dist(cur[27], prev[27]);
+      const jumpR = dist(cur[28], prev[28]);
+      const tSpan = Math.max(1e-6, times[end] - times[idx - 1]);
+      if (jumpL > 0.26 * S0 && jumpL > 1.8 * jumpR) {
+        for (let m = idx; m < end; m++) {
+          const u = (times[m] - times[idx - 1]) / tSpan;
+          rawLm[m]![27] = [
+            prev[27][0] + (next[27][0] - prev[27][0]) * u,
+            prev[27][1] + (next[27][1] - prev[27][1]) * u,
+          ];
+          if (!realFootL[m]) {
+            rawLm[m]![29] = [...rawLm[m]![27]] as [number, number];
+            rawLm[m]![31] = [...rawLm[m]![27]] as [number, number];
+          }
+        }
+      } else if (jumpR > 0.26 * S0 && jumpR > 1.8 * jumpL) {
+        for (let m = idx; m < end; m++) {
+          const u = (times[m] - times[idx - 1]) / tSpan;
+          rawLm[m]![28] = [
+            prev[28][0] + (next[28][0] - prev[28][0]) * u,
+            prev[28][1] + (next[28][1] - prev[28][1]) * u,
+          ];
+          if (!realFootR[m]) {
+            rawLm[m]![30] = [...rawLm[m]![28]] as [number, number];
+            rawLm[m]![32] = [...rawLm[m]![28]] as [number, number];
           }
         }
       }
     }
-    anchorIdx = i;
+    idx = end + 1;
   }
 
-  // Pass 4: Short-gap occlusion interpolation + 1-frame spike rejection + velocity-adaptive filter
-  const TRACKED_JOINTS = [0, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
-  const MIN_CONF = 0.2;
-
-  for (const k of TRACKED_JOINTS) {
-    // 4a. Bridge short low-confidence / occluded runs (up to 0.45s) between confident anchors
-    let i = 0;
-    while (i < n) {
-      const P = lm[i];
-      const V = vis[i];
-      if (!P || !V || Number.isNaN(P[k][0]) || V[k] >= MIN_CONF) {
-        i++;
-        continue;
-      }
-      let j = i;
-      while (j < n && lm[j] && vis[j] && !Number.isNaN(lm[j]![k][0]) && vis[j]![k] < MIN_CONF) {
-        j++;
-      }
-      // Find confident left anchor (i - 1) and right anchor (j)
-      const leftIdx = i - 1;
-      const rightIdx = j;
-      const hasLeft =
-        leftIdx >= 0 && lm[leftIdx] && vis[leftIdx] && vis[leftIdx]![k] >= MIN_CONF;
-      const hasRight =
-        rightIdx < n && lm[rightIdx] && vis[rightIdx] && vis[rightIdx]![k] >= MIN_CONF;
-
-      if (hasLeft && hasRight && times[rightIdx] - times[leftIdx] <= 0.5) {
-        const pA = lm[leftIdx]![k];
-        const pB = lm[rightIdx]![k];
-        const tSpan = Math.max(1e-6, times[rightIdx] - times[leftIdx]);
-        for (let m = i; m < j; m++) {
-          const u = (times[m] - times[leftIdx]) / tSpan;
-          lm[m]![k] = [pA[0] + (pB[0] - pA[0]) * u, pA[1] + (pB[1] - pA[1]) * u];
-          vis[m]![k] = Math.max(vis[m]![k], 0.24);
-        }
-      } else if (hasLeft && j - i <= 5 && times[Math.min(n - 1, j - 1)] - times[leftIdx] <= 0.2) {
-        const pA = lm[leftIdx]![k];
-        for (let m = i; m < j; m++) {
-          lm[m]![k] = [pA[0], pA[1]];
-          vis[m]![k] = Math.max(vis[m]![k], 0.22);
-        }
-      }
-      i = j;
-    }
-
-    // 4b. Single-frame teleport spike rejection (preserves real swings, kills isolated 1-frame glitches)
-    for (let m = 1; m < n - 1; m++) {
-      if (!lm[m - 1] || !lm[m] || !lm[m + 1]) continue;
-      if (times[m + 1] - times[m - 1] > 0.16) continue;
-      const prev = lm[m - 1]![k];
-      const cur = lm[m]![k];
-      const next = lm[m + 1]![k];
-      if (Number.isNaN(prev[0]) || Number.isNaN(cur[0]) || Number.isNaN(next[0])) continue;
-      const dPrev = dist(cur, prev);
-      const dNext = dist(next, cur);
-      const dBridge = dist(next, prev);
-      if (dPrev > 0.42 * S0 && dNext > 0.42 * S0 && dBridge < 0.42 * (dPrev + dNext)) {
-        lm[m]![k] = [(prev[0] + next[0]) / 2, (prev[1] + next[1]) / 2];
-      }
-    }
-
-    // 4c. Velocity-adaptive zero-lag smoothing (steady in quiet stance, 100% raw responsiveness in swing)
-    const smoothedX = new Float64Array(n);
-    const smoothedY = new Float64Array(n);
-    for (let m = 0; m < n; m++) {
-      if (!lm[m] || Number.isNaN(lm[m]![k][0])) continue;
-      const cur = lm[m]![k];
-      const hasNeighbors =
-        m > 0 &&
-        m < n - 1 &&
-        lm[m - 1] &&
-        lm[m + 1] &&
-        !Number.isNaN(lm[m - 1]![k][0]) &&
-        !Number.isNaN(lm[m + 1]![k][0]) &&
-        times[m + 1] - times[m - 1] <= 0.12;
-      if (!hasNeighbors) {
-        smoothedX[m] = cur[0];
-        smoothedY[m] = cur[1];
-        continue;
-      }
-      const prev = lm[m - 1]![k];
-      const next = lm[m + 1]![k];
-      const dtHalf = Math.max(1 / 240, (times[m + 1] - times[m - 1]) / 2);
-      // Speed in torso lengths per second
-      const speedTorsoPerSec = Math.max(dist(cur, prev), dist(next, cur)) / S0 / dtHalf;
-      // Below 1.5 torso/s (quiet stance): blend 25% prev + 50% cur + 25% next to kill micro-jitter.
-      // Above 4.5 torso/s (fast stride / bat swing): neighbor weight = 0 -> zero lag!
-      const u = Math.max(0, Math.min(1, (speedTorsoPerSec - 1.5) / 3.0));
-      const wSide = 0.25 * (1 - u);
-      const wCur = 1 - 2 * wSide;
-      smoothedX[m] = wSide * prev[0] + wCur * cur[0] + wSide * next[0];
-      smoothedY[m] = wSide * prev[1] + wCur * cur[1] + wSide * next[1];
-    }
-    for (let m = 0; m < n; m++) {
-      if (!lm[m] || Number.isNaN(lm[m]![k][0])) continue;
-      lm[m]![k] = [smoothedX[m], smoothedY[m]];
-    }
-  }
-
-  // Pass 5: Anatomical 2-bone segment length clamping (prevents impossible stretched limbs)
-  const LIMB_BONES: Array<[number, number, number]> = [
-    [11, 13, 0.72 * S0], // left upper arm
-    [12, 14, 0.72 * S0], // right upper arm
-    [13, 15, 0.72 * S0], // left forearm
-    [14, 16, 0.72 * S0], // right forearm
-    [23, 25, 0.95 * S0], // left thigh
-    [24, 26, 0.95 * S0], // right thigh
-    [25, 27, 0.95 * S0], // left shin
-    [26, 28, 0.95 * S0], // right shin
-  ];
-
-  const maxSegLen = LIMB_BONES.map(([a, b, fallback]) => {
-    const lens: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const P = lm[i];
-      const V = vis[i];
-      if (!P || !V || V[a] < 0.45 || V[b] < 0.45) continue;
-      const d = dist(P[a], P[b]);
-      if (d > 0.1 * S0 && d < 1.35 * S0) lens.push(d);
-    }
-    const medLen = lens.length >= 15 ? median(lens) : fallback;
-    return Math.min(1.24 * S0, Math.max(medLen * 1.22, fallback * 0.92));
-  });
-
+  // Pass 4: Clean 3-frame median filter (half the swing lag of old 5-frame median, now running AFTER
+  // L/R un-crossing so it never mixes Left and Right legs across a flip).
+  const lm: ([number, number][] | null)[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    const P = lm[i];
-    const V = vis[i];
-    if (!P || !V) continue;
-
-    LIMB_BONES.forEach(([a, b], idx) => {
-      if (Number.isNaN(P[a][0]) || Number.isNaN(P[b][0])) return;
-      const d = dist(P[a], P[b]);
-      const limit = maxSegLen[idx];
-      if (d > limit && d > 1e-6) {
-        const kScale = limit / d;
-        P[b] = [
-          P[a][0] + (P[b][0] - P[a][0]) * kScale,
-          P[a][1] + (P[b][1] - P[a][1]) * kScale,
-        ];
+    if (!rawLm[i]) {
+      lm[i] = null;
+      continue;
+    }
+    const pts: [number, number][] = new Array(33);
+    for (let k = 0; k < 33; k++) {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (let j = Math.max(0, i - 1); j <= Math.min(n - 1, i + 1); j++) {
+        const pj = rawLm[j];
+        if (pj && Math.abs(times[j] - times[i]) <= 0.08 && !Number.isNaN(pj[k][0])) {
+          xs.push(pj[k][0]);
+          ys.push(pj[k][1]);
+        }
       }
-    });
-
-    // Keep MoveNet synthetic heel/toe anchored to stabilized ankle, or translate MediaPipe foot rigidly
-    if (!realFootL[i] || Number.isNaN(P[29][0])) {
-      P[29] = [P[27][0], P[27][1]];
-      P[31] = [P[27][0], P[27][1]];
-      V[29] = V[27];
-      V[31] = V[27];
-    } else if (rawAnkleL[i] && !Number.isNaN(P[27][0])) {
-      const dx = P[27][0] - rawAnkleL[i]![0];
-      const dy = P[27][1] - rawAnkleL[i]![1];
-      P[29] = [P[29][0] + dx, P[29][1] + dy];
-      P[31] = [P[31][0] + dx, P[31][1] + dy];
+      pts[k] = xs.length ? [median(xs), median(ys)] : [rawLm[i]![k][0], rawLm[i]![k][1]];
     }
-
-    if (!realFootR[i] || Number.isNaN(P[30][0])) {
-      P[30] = [P[28][0], P[28][1]];
-      P[32] = [P[28][0], P[28][1]];
-      V[30] = V[28];
-      V[32] = V[28];
-    } else if (rawAnkleR[i] && !Number.isNaN(P[28][0])) {
-      const dx = P[28][0] - rawAnkleR[i]![0];
-      const dy = P[28][1] - rawAnkleR[i]![1];
-      P[30] = [P[30][0] + dx, P[30][1] + dy];
-      P[32] = [P[32][0] + dx, P[32][1] + dy];
+    if (!realFootL[i]) {
+      pts[29] = [pts[27][0], pts[27][1]];
+      pts[31] = [pts[27][0], pts[27][1]];
     }
+    if (!realFootR[i]) {
+      pts[30] = [pts[28][0], pts[28][1]];
+      pts[32] = [pts[28][0], pts[28][1]];
+    }
+    lm[i] = pts;
   }
 
   return { lm, vis, torsoScale: S0 };
@@ -726,30 +565,19 @@ export function computeWeight(
   const S = median(torso) || torsoScale || 100;
   const dir = o.bowler === 'left' ? -1 : 1; // +1 means "forward" is toward larger x
 
-  const spanFootSpeed = (a: number, b: number, s: 'l' | 'r') => {
-    const ia = Math.max(0, a);
-    const ib = Math.min(n - 1, b);
-    const lma = lm[ia];
-    const lmb = lm[ib];
-    if (!lma || !lmb || times[ib] <= times[ia]) return 0;
+  const footSpeed = (i: number, s: 'l' | 'r') => {
+    const a = Math.max(0, i - 2);
+    const b = Math.min(n - 1, i + 2);
+    const lma = lm[a];
+    const lmb = lm[b];
+    if (!lma || !lmb || times[b] <= times[a]) return 0;
     const pa = footPoint(lma, s);
     const pb = footPoint(lmb, s);
-    return Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / S / (times[ib] - times[ia]);
+    return Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / S / (times[b] - times[a]);
   };
 
-  // Landing-aware foot speed: if the foot just planted on frame `i` (i..i+2 stationary), don't let
-  // pre-landing velocity (i-2..i) falsely mark the planted heel-strike as airborne.
-  const footSpeed = (i: number, s: 'l' | 'r') => {
-    const sym = spanFootSpeed(i - 2, i + 2, s);
-    if (i + 2 < n && times[i + 2] > times[i]) {
-      return Math.min(sym, spanFootSpeed(i, i + 2, s) * 1.15);
-    }
-    return sym;
-  };
-
-  // Boot center-of-pressure extent: anatomical ~0.10*S pad around ankle when heel/toe are synthetic,
-  // or 0.22*S when matching the Kohli TV broadcast reference calibration.
-  const anklePad = (o.calibrated ? 0.22 : 0.1) * S;
+  // Boot support extent along the pitch (0.16*S around MoveNet ankle, or 0.22*S on Kohli TV ref)
+  const anklePad = (o.calibrated ? 0.22 : 0.16) * S;
   const footExtent = (P: [number, number][], s: 'l' | 'r') => {
     const xs = [
       P[L[`${s}An` as const]][0],
@@ -772,31 +600,17 @@ export function computeWeight(
     return t * t * (3 - 2 * t);
   };
 
-  const rawFwds = new Float64Array(n).fill(NaN);
-  const frameMeta: Array<{
-    frontX: number;
-    backX: number;
-    frontFoot: [number, number];
-    backFoot: [number, number];
-    frontLifted: boolean;
-    backLifted: boolean;
-    kinematics: FrameKinematics;
-  } | null> = new Array(n).fill(null);
-
-  let prevLIsFront: boolean | null = null;
+  const out: (WeightFrame | null)[] = [];
+  let ema = NaN;
   for (let i = 0; i < n; i++) {
     const f = frames[i];
     const P = lm[i];
     const V = vis[i];
-    if (!f || !P || !V) continue;
-
-    const footSepSigned = dir * (f.lFoot[0] - f.rFoot[0]);
-    const lIsFront: boolean =
-      prevLIsFront !== null && Math.abs(footSepSigned) < 0.08 * S
-        ? prevLIsFront
-        : footSepSigned >= 0;
-    prevLIsFront = lIsFront;
-
+    if (!f || !P || !V) {
+      out.push(null);
+      continue;
+    }
+    const lIsFront = dir * f.lFoot[0] > dir * f.rFoot[0];
     const fs: 'l' | 'r' = lIsFront ? 'l' : 'r';
     const bs: 'l' | 'r' = lIsFront ? 'r' : 'l';
     const fe = footExtent(P, fs);
@@ -808,96 +622,37 @@ export function computeWeight(
 
     const kinematics = computeFrameKinematics(P, f.com, frontX, backX, fs, bs, dir, S);
 
-    // Compute static + dynamic ground-reaction forward share
-    const span = Math.max(dir * (frontX - backX), o.narrowStance * S);
-    let baseFwd = (dir * (f.com[0] - backX)) / span;
-
-    if (o.calibrated) {
-      // TV Broadcast ground-reaction calibration (Kohli TV reference track)
-      const headLead = (dir * (P[L.nose][0] - f.com[0])) / S;
-      const leadBoost = Math.max(0, (headLead - 0.42) * 0.18);
-      baseFwd = (baseFwd + leadBoost - 0.24) / 0.52;
-    } else {
-      // Biomechanical ground-reaction correction for real batting strides:
-      // In a committed stride (stride > 0.78*S), the trailing leg (~15% body mass) extends behind
-      // the pelvis while the batter stacks chest & head over a flexed front knee (<162°), rolling
-      // onto the trailing toe so 85-95% of vertical ground force goes into the front foot.
-      const hipMidX = (P[L.lHip][0] + P[L.rHip][0]) / 2;
-      const headLeadHip = (dir * (kinematics.headPt[0] - hipMidX)) / S;
-      const strideCommit = smoothstep(0.75, 1.3, kinematics.strideTorso);
-      const frontKneeCommit = smoothstep(168, 132, kinematics.frontKneeDeg);
-      const headCommit = smoothstep(0.08, 0.48, headLeadHip);
-      const driveBoost = 0.14 * strideCommit * (0.55 * frontKneeCommit + 0.45 * headCommit);
-
-      // Symmetric back-foot transfer boost when sitting into a flexed back knee with head back
-      const backKneeCommit = smoothstep(166, 134, kinematics.backKneeDeg);
-      const headBack = smoothstep(0.08, -0.22, headLeadHip);
-      const backCutPullBoost = 0.1 * backKneeCommit * headBack;
-
-      baseFwd = baseFwd + driveBoost - backCutPullBoost;
-    }
-
-    // Smooth progressive foot-lift unweighting gated by Newtonian COM balance:
-    // - Front foot can only be unweighted when COM is still balanced near the planted back foot.
-    // - Back foot can only be unweighted when COM has shifted onto the planted front foot.
     const vf = footSpeed(i, fs);
     const vb = footSpeed(i, bs);
+    const frontLifted = vf > o.liftSpeed && vb < o.liftSpeed * 0.5;
+    const backLifted = vb > o.liftSpeed && vf < o.liftSpeed * 0.5;
 
-    const plantedBack = smoothstep(o.liftSpeed * 0.85, o.liftSpeed * 0.35, vb);
-    const plantedFront = smoothstep(o.liftSpeed * 0.85, o.liftSpeed * 0.35, vf);
-    const comNearBack = smoothstep(0.62, 0.34, baseFwd);
-    const comNearFront = smoothstep(0.38, 0.66, baseFwd);
-
-    const frontAir =
-      plantedBack * comNearBack * smoothstep(o.liftSpeed * 0.9, o.liftSpeed * 1.75, vf);
-    const backAir =
-      plantedFront * comNearFront * smoothstep(o.liftSpeed * 0.9, o.liftSpeed * 1.75, vb);
-
-    let fwd = baseFwd;
-    if (frontAir > backAir && frontAir > 0.01) {
-      fwd = baseFwd * (1 - frontAir);
-    } else if (backAir > frontAir && backAir > 0.01) {
-      fwd = baseFwd + (1 - baseFwd) * backAir;
+    let fwd: number;
+    if (frontLifted) {
+      fwd = 0;
+    } else if (backLifted) {
+      fwd = 1;
+    } else {
+      const span = Math.max(dir * (frontX - backX), o.narrowStance * S);
+      fwd = (dir * (f.com[0] - backX)) / span;
+      if (o.calibrated) {
+        // TV Broadcast ground-reaction calibration (Kohli TV reference track)
+        const headLead = (dir * (P[L.nose][0] - f.com[0])) / S;
+        const leadBoost = Math.max(0, (headLead - 0.42) * 0.18);
+        fwd = (fwd + leadBoost - 0.24) / 0.52;
+      } else {
+        // Modest biomechanical front-knee drive boost when striding onto a flexed front leg,
+        // accounting for the trailing leg mass staying geometrically behind the hips.
+        const hipMidX = (P[L.lHip][0] + P[L.rHip][0]) / 2;
+        const headLeadHip = (dir * (kinematics.headPt[0] - hipMidX)) / S;
+        const strideCommit = smoothstep(0.8, 1.35, kinematics.strideTorso);
+        const frontKneeCommit = smoothstep(166, 132, kinematics.frontKneeDeg);
+        const headCommit = smoothstep(0.08, 0.45, headLeadHip);
+        fwd += 0.11 * strideCommit * (0.55 * frontKneeCommit + 0.45 * headCommit);
+      }
     }
 
-    rawFwds[i] = Math.max(0, Math.min(1, fwd));
-    frameMeta[i] = {
-      frontX,
-      backX,
-      frontFoot,
-      backFoot,
-      frontLifted: frontAir > 0.55,
-      backLifted: backAir > 0.55,
-      kinematics,
-    };
-  }
-
-  const out: (WeightFrame | null)[] = [];
-  let ema = NaN;
-  for (let i = 0; i < n; i++) {
-    const f = frames[i];
-    const P = lm[i];
-    const V = vis[i];
-    const meta = frameMeta[i];
-    if (!f || !P || !V || !meta || Number.isNaN(rawFwds[i])) {
-      out.push(null);
-      continue;
-    }
-    // 3-frame median despiker kills 1-frame transients without dulling genuine stride transfer
-    let fwd = rawFwds[i];
-    if (
-      i > 0 &&
-      i < n - 1 &&
-      !Number.isNaN(rawFwds[i - 1]) &&
-      !Number.isNaN(rawFwds[i + 1]) &&
-      times[i + 1] - times[i - 1] <= 0.12
-    ) {
-      const a = rawFwds[i - 1];
-      const b = rawFwds[i];
-      const c = rawFwds[i + 1];
-      fwd = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
-    }
-
+    fwd = Math.max(0, Math.min(1, fwd));
     const dt = i > 0 ? Math.max(1 / 240, Math.min(0.15, times[i] - times[i - 1])) : 1 / 30;
     const alpha = 1 - Math.pow(1 - o.smooth, Math.min(2.5, dt * 30));
     ema = Number.isNaN(ema) ? fwd : ema + alpha * (fwd - ema);
@@ -907,13 +662,13 @@ export function computeWeight(
       forward: ema,
       rawForward: fwd,
       com: f.com,
-      front: [meta.frontX, meta.frontFoot[1]],
-      back: [meta.backX, meta.backFoot[1]],
-      frontLifted: meta.frontLifted,
-      backLifted: meta.backLifted,
+      front: [frontX, frontFoot[1]],
+      back: [backX, backFoot[1]],
+      frontLifted,
+      backLifted,
       landmarks: P,
       visibilities: V,
-      kinematics: meta.kinematics,
+      kinematics,
     });
   }
   return { frames: out, scale: S };

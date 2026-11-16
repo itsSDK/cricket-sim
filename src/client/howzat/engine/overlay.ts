@@ -221,128 +221,68 @@ export function drawBody(
     g.restore();
   }
 
-  // 4. Live Anatomical Skeleton (back-side limbs depth-shaded, central spine + head ring, crisp front-side limbs)
+  // 4. Live Skeleton (crisp full-brightness bones with un-crossed torso ribs)
   if (skeleton) {
-    const V = f.visibilities || [];
-    const confOf = (k: number) => (V[k] === undefined || Number.isNaN(V[k]) ? 1 : V[k]);
-    const valid = (k: number, minV = 0.16) => !Number.isNaN(P[k][0]) && confOf(k) >= minV;
+    g.save();
+    g.lineCap = 'round';
+    g.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+    g.lineWidth = lw;
 
-    const strokeSeg = (
-      pA: [number, number],
-      pB: [number, number],
-      color: string,
-      width: number,
-    ) => {
+    const strokePair = (pA: [number, number], pB: [number, number]) => {
       if (Number.isNaN(pA[0]) || Number.isNaN(pB[0])) return;
-      g.strokeStyle = color;
-      g.lineWidth = width;
       g.beginPath();
       g.moveTo(pA[0], pA[1]);
       g.lineTo(pB[0], pB[1]);
       g.stroke();
     };
 
-    const drawSideChain = (side: 'l' | 'r', isFront: boolean) => {
-      const sh = side === 'l' ? 11 : 12;
-      const el = side === 'l' ? 13 : 14;
-      const wr = side === 'l' ? 15 : 16;
-      const hp = side === 'l' ? 23 : 24;
-      const kn = side === 'l' ? 25 : 26;
-      const an = side === 'l' ? 27 : 28;
-      const he = side === 'l' ? 29 : 30;
-      const to = side === 'l' ? 31 : 32;
-
-      const boneColor = isFront ? 'rgba(255, 255, 255, 0.96)' : 'rgba(148, 197, 235, 0.56)';
-      const boneW = isFront ? lw * 1.08 : lw * 0.88;
-      const jointColor = isFront ? '#38bdf8' : 'rgba(125, 211, 252, 0.62)';
-      const jointR = isFront ? lw * 1.38 : lw * 1.12;
-
-      const bones: Array<[number, number]> = [
-        [sh, el],
-        [el, wr],
-        [hp, kn],
-        [kn, an],
-      ];
-      // Include boot outline only when distinct heel/toe landmarks exist
-      if (
-        !Number.isNaN(P[an][0]) &&
-        !Number.isNaN(P[to][0]) &&
-        Math.hypot(P[an][0] - P[to][0], P[an][1] - P[to][1]) > 2
-      ) {
-        bones.push([an, he], [he, to], [an, to]);
-      }
-
-      for (const [a, b] of bones) {
-        if (!valid(a) || !valid(b)) continue;
-        strokeSeg(P[a], P[b], boneColor, boneW);
-      }
-
-      g.fillStyle = jointColor;
-      for (const k of [sh, el, wr, hp, kn, an]) {
-        if (!valid(k)) continue;
-        g.beginPath();
-        g.arc(P[k][0], P[k][1], jointR, 0, Math.PI * 2);
-        g.fill();
-      }
-    };
-
-    g.save();
-    g.lineCap = 'round';
-    g.lineJoin = 'round';
-
-    const frontSide = f.kinematics.frontSide;
-    const backSide = f.kinematics.backSide;
-
-    // 4a. Far / trail arm & leg first (subtle depth shading)
-    drawSideChain(backSide, false);
-
-    // 4b. Anatomical Shoulder Bar, Pelvis Bar, Central Spine & Head/Helmet Ring
-    if (!Number.isNaN(P[11][0]) && !Number.isNaN(P[12][0]) && !Number.isNaN(P[23][0]) && !Number.isNaN(P[24][0])) {
-      const shMid: [number, number] = [(P[11][0] + P[12][0]) / 2, (P[11][1] + P[12][1]) / 2];
-      const hipMid: [number, number] = [(P[23][0] + P[24][0]) / 2, (P[23][1] + P[24][1]) / 2];
-      const torsoLen = Math.hypot(shMid[0] - hipMid[0], shMid[1] - hipMid[1]);
-
-      // Shoulder & pelvis crossbars
-      strokeSeg(P[11], P[12], 'rgba(186, 230, 253, 0.68)', lw * 0.85);
-      strokeSeg(P[23], P[24], 'rgba(186, 230, 253, 0.68)', lw * 0.85);
-
-      // Central biomechanical spine (pelvis -> sternum/neck)
-      strokeSeg(hipMid, shMid, 'rgba(255, 255, 255, 0.92)', lw * 1.12);
-
-      // Neck & Head/Helmet alignment ring
-      const headC = toPx(f.kinematics.headPt);
-      if (!Number.isNaN(headC[0])) {
-        const headR = Math.max(lw * 2.4, Math.min(lw * 5.2, torsoLen * 0.2));
-        const dx = headC[0] - shMid[0];
-        const dy = headC[1] - shMid[1];
-        const neckDist = Math.hypot(dx, dy);
-        if (neckDist > headR * 1.05) {
-          const neckEnd: [number, number] = [
-            headC[0] - (dx / neckDist) * headR * 0.92,
-            headC[1] - (dy / neckDist) * headR * 0.92,
-          ];
-          strokeSeg(shMid, neckEnd, 'rgba(255, 255, 255, 0.86)', lw * 0.95);
-        }
-        if (!silhouetteFill) {
-          g.beginPath();
-          g.arc(headC[0], headC[1], headR, 0, Math.PI * 2);
-          g.strokeStyle = 'rgba(186, 230, 253, 0.82)';
-          g.lineWidth = lw * 0.85;
-          g.stroke();
-        }
-        // Nose / gaze focal marker
-        if (valid(0, 0.2)) {
-          g.fillStyle = '#38bdf8';
-          g.beginPath();
-          g.arc(P[0][0], P[0][1], lw * 1.15, 0, Math.PI * 2);
-          g.fill();
-        }
+    // Un-crossed torso frame (ensures left/right ribs never twist into an hourglass X)
+    strokePair(P[11], P[12]);
+    strokePair(P[23], P[24]);
+    if (!Number.isNaN(P[11][0]) && !Number.isNaN(P[23][0])) {
+      const dStraight =
+        Math.hypot(P[11][0] - P[23][0], P[11][1] - P[23][1]) +
+        Math.hypot(P[12][0] - P[24][0], P[12][1] - P[24][1]);
+      const dCross =
+        Math.hypot(P[11][0] - P[24][0], P[11][1] - P[24][1]) +
+        Math.hypot(P[12][0] - P[23][0], P[12][1] - P[23][1]);
+      if (dCross < dStraight) {
+        strokePair(P[11], P[24]);
+        strokePair(P[12], P[23]);
+      } else {
+        strokePair(P[11], P[23]);
+        strokePair(P[12], P[24]);
       }
     }
 
-    // 4c. Near / lead arm & leg on top (crisp white + bright sky joints)
-    drawSideChain(frontSide, true);
+    // Arms & Legs (plus boot outline when distinct heel/toe landmarks exist)
+    const limbBones: Array<[number, number]> = [
+      [11, 13],
+      [13, 15],
+      [12, 14],
+      [14, 16],
+      [23, 25],
+      [25, 27],
+      [24, 26],
+      [26, 28],
+    ];
+    if (!Number.isNaN(P[27][0]) && !Number.isNaN(P[31][0]) && Math.hypot(P[27][0] - P[31][0], P[27][1] - P[31][1]) > 2) {
+      limbBones.push([27, 29], [29, 31], [27, 31]);
+    }
+    if (!Number.isNaN(P[28][0]) && !Number.isNaN(P[32][0]) && Math.hypot(P[28][0] - P[32][0], P[28][1] - P[32][1]) > 2) {
+      limbBones.push([28, 30], [30, 32], [28, 32]);
+    }
+    for (const [a, b] of limbBones) {
+      strokePair(P[a], P[b]);
+    }
 
+    g.fillStyle = '#4fc3f7';
+    for (const k of [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]) {
+      if (Number.isNaN(P[k][0])) continue;
+      g.beginPath();
+      g.arc(P[k][0], P[k][1], lw * 1.35, 0, Math.PI * 2);
+      g.fill();
+    }
     g.restore();
   }
 

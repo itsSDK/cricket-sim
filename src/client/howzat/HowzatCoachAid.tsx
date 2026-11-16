@@ -178,19 +178,10 @@ export default function HowzatCoachAid({
     }));
   }, [weightResult, shots]);
 
-  // Active frame pose (interpolated to exact video timestamp, auto-correcting container cts shift)
+  // Active frame pose (interpolated to exact video timestamp)
   const currentFrame: WeightFrame | null = useMemo(() => {
     if (!weightResult || !analysis) return null;
-    const fs = frameSourceRef.current;
-    const originShift =
-      fs &&
-      !fs.isVirtual &&
-      fs.times.length > 0 &&
-      analysis.times.length > 0 &&
-      Math.abs(analysis.times[0] - fs.times[0]) < 0.1
-        ? analysis.times[0] - fs.times[0]
-        : 0;
-    return poseAtTime(weightResult, analysis.times, curTime + originShift, analysis.meta.fps);
+    return poseAtTime(weightResult, analysis.times, curTime, analysis.meta.fps);
   }, [weightResult, analysis, curTime]);
 
   // Frame-accurate seek helper (matching coach.html seek(i))

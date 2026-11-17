@@ -565,19 +565,22 @@ export function computeWeight(
   const S = median(torso) || torsoScale || 100;
   const dir = o.bowler === 'left' ? -1 : 1; // +1 means "forward" is toward larger x
 
-  const footSpeed = (i: number, s: 'l' | 'r') => {
+  const footVelocity = (i: number, s: 'l' | 'r') => {
     const a = Math.max(0, i - 2);
     const b = Math.min(n - 1, i + 2);
     const lma = lm[a];
     const lmb = lm[b];
-    if (!lma || !lmb || times[b] <= times[a]) return 0;
+    if (!lma || !lmb || times[b] <= times[a]) return { speed: 0, vx: 0, vy: 0 };
     const pa = footPoint(lma, s);
     const pb = footPoint(lmb, s);
-    return Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / S / (times[b] - times[a]);
+    const dtSpan = times[b] - times[a];
+    const vx = (pb[0] - pa[0]) / S / dtSpan;
+    const vy = (pb[1] - pa[1]) / S / dtSpan;
+    return { speed: Math.hypot(vx, vy), vx, vy };
   };
 
-  // Boot support extent along the pitch (0.16*S around MoveNet ankle, or 0.22*S on Kohli TV ref)
-  const anklePad = (o.calibrated ? 0.22 : 0.16) * S;
+  // Boot support extent for calibrated MediaPipe broadcast clips (Kohli TV reference)
+  const anklePad = 0.22 * S;
   const footExtent = (P: [number, number][], s: 'l' | 'r') => {
     const xs = [
       P[L[`${s}An` as const]][0],
@@ -613,42 +616,95 @@ export function computeWeight(
     const lIsFront = dir * f.lFoot[0] > dir * f.rFoot[0];
     const fs: 'l' | 'r' = lIsFront ? 'l' : 'r';
     const bs: 'l' | 'r' = lIsFront ? 'r' : 'l';
-    const fe = footExtent(P, fs);
-    const be = footExtent(P, bs);
-    const frontX = dir > 0 ? fe.max : fe.min;
-    const backX = dir > 0 ? be.min : be.max;
     const frontFoot = fs === 'l' ? f.lFoot : f.rFoot;
     const backFoot = bs === 'l' ? f.lFoot : f.rFoot;
 
+    let frontX: number;
+    let backX: number;
+    if (o.calibrated) {
+      const fe = footExtent(P, fs);
+      const be = footExtent(P, bs);
+      frontX = dir > 0 ? fe.max : fe.min;
+      backX = dir > 0 ? be.min : be.max;
+    } else {
+      // Side-on cricket foot Centers of Pressure (CoP):
+      // - Front foot points ~45° down the pitch -> midfoot CoP sits slightly (~0.05*S) ahead of ankle.
+      // - Back foot rests parallel to the crease (seen end-on by side camera) -> CoP sits under ankle/instep.
+      // - When the batter collapses/drops onto a deeply bent back knee with the lower shin folded
+      //   horizontally behind the knee, the effective rear load column shifts partway toward the back knee.
+      const fHip = P[fs === 'l' ? L.lHip : L.rHip];
+      const bHip = P[bs === 'l' ? L.lHip : L.rHip];
+      const bKn = P[bs === 'l' ? L.lKn : L.rKn];
+      const bAn = P[bs === 'l' ? L.lAn : L.rAn];
+      void fHip;
+
+      const rawFrontCoP = frontFoot[0] + dir * 0.05 * S;
+      const rawBackCoP = backFoot[0];
+
+      const shinLen = Math.hypot(bAn[0] - bKn[0], bAn[1] - bKn[1]);
+      const shinBehindKnee = Math.max(0, dir * (bKn[0] - bAn[0]));
+      const shinHorizRatio = shinLen > 1e-3 ? shinBehindKnee / shinLen : 0;
+      const bKneeDeg = jointAngleDeg(bHip, bKn, bAn);
+      const backKneeFold =
+        smoothstep(156, 116, bKneeDeg) * smoothstep(0.42, 0.82, shinHorizRatio);
+
+      frontX = rawFrontCoP;
+      backX = rawBackCoP + 0.55 * backKneeFold * (bKn[0] - rawBackCoP);
+    }
+
     const kinematics = computeFrameKinematics(P, f.com, frontX, backX, fs, bs, dir, S);
 
-    const vf = footSpeed(i, fs);
-    const vb = footSpeed(i, bs);
-    const frontLifted = vf > o.liftSpeed && vb < o.liftSpeed * 0.5;
-    const backLifted = vb > o.liftSpeed && vf < o.liftSpeed * 0.5;
+    const minBase = (o.calibrated ? o.narrowStance : 0.42) * S;
+    const span = Math.max(dir * (frontX - backX), minBase);
+    const geomFwd = (dir * (f.com[0] - backX)) / span;
+
+    const fv = footVelocity(i, fs);
+    const bv = footVelocity(i, bs);
+
+    // Front foot is unweighted in the air ONLY when moving fast while CoM remains back on the rear half
+    const frontLifted =
+      fv.speed > o.liftSpeed && bv.speed < o.liftSpeed * 0.55 && geomFwd < 0.62;
+
+    // Back foot is unweighted in the air ONLY when CoM is genuinely stacked over the front foot,
+    // the back ankle is physically elevated above the planted front ankle, and the back foot is NOT
+    // sliding/stepping backward toward the stumps!
+    const backElevated = frontFoot[1] - backFoot[1] > 0.05 * S;
+    const backMovingForwardOrUp = dir * bv.vx >= -0.2;
+    const comOverFront = geomFwd >= 0.78 && Math.abs(f.com[0] - frontX) < 0.3 * S;
+    const backLifted =
+      bv.speed > o.liftSpeed &&
+      fv.speed < o.liftSpeed * 0.5 &&
+      comOverFront &&
+      backElevated &&
+      backMovingForwardOrUp;
 
     let fwd: number;
     if (frontLifted) {
-      fwd = 0;
+      fwd = o.calibrated ? 0 : Math.min(Math.max(0, geomFwd), 0.06);
     } else if (backLifted) {
-      fwd = 1;
+      fwd = o.calibrated ? 1 : Math.max(geomFwd, 0.95);
     } else {
-      const span = Math.max(dir * (frontX - backX), o.narrowStance * S);
-      fwd = (dir * (f.com[0] - backX)) / span;
+      fwd = geomFwd;
       if (o.calibrated) {
         // TV Broadcast ground-reaction calibration (Kohli TV reference track)
         const headLead = (dir * (P[L.nose][0] - f.com[0])) / S;
         const leadBoost = Math.max(0, (headLead - 0.42) * 0.18);
         fwd = (fwd + leadBoost - 0.24) / 0.52;
       } else {
-        // Modest biomechanical front-knee drive boost when striding onto a flexed front leg,
-        // accounting for the trailing leg mass staying geometrically behind the hips.
+        // Dynamic trunk & knee commitment:
+        // - Forward drive boost ONLY when CoM is already forward (>55%) AND chest/head lead into the ball.
+        // - Backward lean shift when shoulders lean back away from the bowler behind the hips.
         const hipMidX = (P[L.lHip][0] + P[L.rHip][0]) / 2;
         const headLeadHip = (dir * (kinematics.headPt[0] - hipMidX)) / S;
-        const strideCommit = smoothstep(0.8, 1.35, kinematics.strideTorso);
-        const frontKneeCommit = smoothstep(166, 132, kinematics.frontKneeDeg);
-        const headCommit = smoothstep(0.08, 0.45, headLeadHip);
-        fwd += 0.11 * strideCommit * (0.55 * frontKneeCommit + 0.45 * headCommit);
+        if (geomFwd > 0.55 && kinematics.spineLeanDeg >= 0) {
+          const strideCommit = smoothstep(0.85, 1.4, kinematics.strideTorso);
+          const frontKneeCommit = smoothstep(164, 130, kinematics.frontKneeDeg);
+          const headCommit = smoothstep(0.06, 0.4, headLeadHip);
+          const forwardDrive = smoothstep(0.55, 0.78, geomFwd);
+          fwd += 0.08 * forwardDrive * strideCommit * (0.45 * frontKneeCommit + 0.55 * headCommit);
+        } else if (kinematics.spineLeanDeg < -2) {
+          fwd -= 0.08 * smoothstep(-2, -14, kinematics.spineLeanDeg);
+        }
       }
     }
 

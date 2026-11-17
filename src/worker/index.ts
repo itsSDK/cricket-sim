@@ -139,16 +139,183 @@ export default {
   },
 };
 
-function json(data: unknown, status = 200) {
+function json(data: unknown, status = 200, extraHeaders?: Record<string, string>) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      ...extraHeaders,
     },
   });
+}
+
+interface RawHowzatFlag {
+  id?: unknown;
+  frameIdx?: unknown;
+  time?: unknown;
+  label?: unknown;
+  color?: unknown;
+}
+
+let flagsTableReadyPromise: Promise<void> | null = null;
+
+function ensureHowzatFlagsTable(db: D1Database): Promise<void> {
+  if (!flagsTableReadyPromise) {
+    flagsTableReadyPromise = db
+      .batch([
+        db.prepare(
+          `CREATE TABLE IF NOT EXISTS howzat_flags (
+            clip_key TEXT NOT NULL,
+            flag_id TEXT NOT NULL,
+            frame_idx INTEGER NOT NULL,
+            time_sec REAL NOT NULL,
+            label TEXT NOT NULL,
+            color TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (clip_key, flag_id)
+          )`,
+        ),
+        db.prepare(
+          `CREATE INDEX IF NOT EXISTS idx_howzat_flags_clip ON howzat_flags(clip_key, frame_idx)`,
+        ),
+      ])
+      .then(() => undefined)
+      .catch((err) => {
+        flagsTableReadyPromise = null;
+        throw err;
+      });
+  }
+  return flagsTableReadyPromise;
+}
+
+async function listHowzatFlags(db: D1Database, clipKey: string) {
+  const res = await db
+    .prepare(
+      `SELECT flag_id AS id, frame_idx AS frameIdx, time_sec AS time, label, color
+       FROM howzat_flags
+       WHERE clip_key = ?
+       ORDER BY frame_idx ASC, time_sec ASC`,
+    )
+    .bind(clipKey)
+    .all();
+  return res.results ?? [];
+}
+
+async function handleHowzatFlagsRequest(request: Request, env: Env): Promise<Response> {
+  const noCache = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
+  try {
+    await ensureHowzatFlagsTable(env.DB);
+    const url = new URL(request.url);
+
+    if (request.method === 'GET') {
+      const clipKey = (url.searchParams.get('clip') || '').trim();
+      if (!clipKey || clipKey.length > 200) {
+        return json({ error: 'Valid clip key is required' }, 400, noCache);
+      }
+      const flags = await listHowzatFlags(env.DB, clipKey);
+      return json({ clipKey, flags }, 200, noCache);
+    }
+
+    if (request.method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as {
+        clipKey?: unknown;
+        flag?: RawHowzatFlag;
+        flags?: RawHowzatFlag[];
+      };
+      const clipKey = typeof body.clipKey === 'string' ? body.clipKey.trim() : '';
+      if (!clipKey || clipKey.length > 200) {
+        return json({ error: 'Valid clipKey is required' }, 400, noCache);
+      }
+
+      const incoming = Array.isArray(body.flags)
+        ? body.flags
+        : body.flag && typeof body.flag === 'object'
+          ? [body.flag]
+          : [];
+
+      if (incoming.length > 200) {
+        return json({ error: 'Too many flags in one request' }, 400, noCache);
+      }
+
+      const now = Date.now();
+      const statements: D1PreparedStatement[] = [];
+
+      for (const raw of incoming) {
+        if (!raw || typeof raw !== 'object') continue;
+        const id =
+          typeof raw.id === 'string' && raw.id.trim()
+            ? raw.id.trim().slice(0, 80)
+            : `${now}-${nanoid(6)}`;
+        const frameIdx =
+          typeof raw.frameIdx === 'number' && Number.isFinite(raw.frameIdx)
+            ? Math.max(0, Math.round(raw.frameIdx))
+            : null;
+        const time =
+          typeof raw.time === 'number' && Number.isFinite(raw.time)
+            ? Math.max(0, raw.time)
+            : 0;
+        const label =
+          typeof raw.label === 'string' && raw.label.trim()
+            ? raw.label.trim().slice(0, 48)
+            : 'Flag';
+        const color =
+          typeof raw.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(raw.color.trim())
+            ? raw.color.trim()
+            : '#f43f5e';
+
+        if (frameIdx === null) continue;
+
+        statements.push(
+          env.DB.prepare(
+            `DELETE FROM howzat_flags WHERE clip_key = ? AND (flag_id = ? OR frame_idx = ?)`,
+          ).bind(clipKey, id, frameIdx),
+          env.DB.prepare(
+            `INSERT INTO howzat_flags (clip_key, flag_id, frame_idx, time_sec, label, color, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(clipKey, id, frameIdx, time, label, color, now),
+        );
+      }
+
+      if (statements.length > 0) {
+        await env.DB.batch(statements);
+      }
+
+      const flags = await listHowzatFlags(env.DB, clipKey);
+      return json({ clipKey, flags }, 200, noCache);
+    }
+
+    if (request.method === 'DELETE') {
+      const clipKey = (url.searchParams.get('clip') || '').trim();
+      if (!clipKey || clipKey.length > 200) {
+        return json({ error: 'Valid clip key is required' }, 400, noCache);
+      }
+      const clearAll = url.searchParams.get('all') === '1';
+      const flagId = (url.searchParams.get('id') || '').trim();
+
+      if (clearAll) {
+        await env.DB.prepare(`DELETE FROM howzat_flags WHERE clip_key = ?`).bind(clipKey).run();
+      } else if (flagId) {
+        await env.DB.prepare(
+          `DELETE FROM howzat_flags WHERE clip_key = ? AND flag_id = ?`,
+        )
+          .bind(clipKey, flagId)
+          .run();
+      } else {
+        return json({ error: 'Specify id or all=1' }, 400, noCache);
+      }
+
+      const flags = await listHowzatFlags(env.DB, clipKey);
+      return json({ clipKey, flags }, 200, noCache);
+    }
+
+    return json({ error: 'Method Not Allowed' }, 405, noCache);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return json({ error: message }, 500, noCache);
+  }
 }
 
 async function readJsonBody(request: Request): Promise<SessionRequestBody> {
@@ -164,6 +331,11 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
 
   if (request.method === 'OPTIONS') {
     return json({}, 200);
+  }
+
+  // Cloud-synced Howzat Coaching Flags (accessible from standalone /howzat & Coach views across devices)
+  if (url.pathname === '/api/howzat/flags') {
+    return handleHowzatFlagsRequest(request, env);
   }
 
   // Public API endpoint for specific session if needed by display

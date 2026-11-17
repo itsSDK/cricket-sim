@@ -76,6 +76,58 @@ function saveStoredFlags(clipKey: string, list: SeekFlag[]): void {
   }
 }
 
+function loadSyncedFlagIds(clipKey: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(`howzat:flags:syncedIds:v1:${clipKey}`);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((x) => typeof x === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSyncedFlagIds(clipKey: string, ids: Iterable<string>): void {
+  try {
+    localStorage.setItem(`howzat:flags:syncedIds:v1:${clipKey}`, JSON.stringify(Array.from(ids)));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function resolveInitialPresetId(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('clip');
+    if (fromUrl && HOWZAT_DEMO_PRESETS.some((p) => p.id === fromUrl)) {
+      return fromUrl;
+    }
+    const fromStorage = localStorage.getItem('howzat:lastPresetId');
+    if (fromStorage && HOWZAT_DEMO_PRESETS.some((p) => p.id === fromStorage)) {
+      return fromStorage;
+    }
+  } catch {
+    // ignore
+  }
+  return 'IMG_8141.MP4';
+}
+
+function resolveFlagFrame(fl: SeekFlag, fs: FrameSource | null): number {
+  if (!fs || fs.count <= 0) return fl.frameIdx;
+  if (
+    fl.frameIdx >= 0 &&
+    fl.frameIdx < fs.count &&
+    typeof fl.time === 'number' &&
+    Math.abs((fs.times[fl.frameIdx] ?? 0) - fl.time) < 0.025
+  ) {
+    return fl.frameIdx;
+  }
+  if (typeof fl.time === 'number' && Number.isFinite(fl.time)) {
+    return fs.indexAt(fl.time);
+  }
+  return Math.max(0, Math.min(fs.count - 1, fl.frameIdx));
+}
+
 function formatFlagTime(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
@@ -93,7 +145,8 @@ export default function HowzatCoachAid({
   defaultPlayerName = 'BATTER 1',
   compact = false,
 }: HowzatCoachAidProps) {
-  const [presetId, setPresetId] = useState<string>('IMG_8141.MP4');
+  const initialPreset = useMemo(() => resolveInitialPresetId(), []);
+  const [presetId, setPresetId] = useState<string>(initialPreset);
   const [playerName, setPlayerName] = useState<string>(defaultPlayerName);
   const [clipName, setClipName] = useState<string>('IMG_8141.MP4 — Net Session #1');
   const [bowlerSide, setBowlerSide] = useState<'left' | 'right'>('left');
@@ -141,9 +194,12 @@ export default function HowzatCoachAid({
   const [speed, setSpeed] = useState<number>(0.25);
   const [bitmapTick, setBitmapTick] = useState<number>(0);
 
-  // Seek Bar Coaching Flags state (persisted per clip in localStorage)
-  const [activeClipKey, setActiveClipKey] = useState<string>('IMG_8141.MP4');
-  const [flags, setFlags] = useState<SeekFlag[]>(() => loadStoredFlags('IMG_8141.MP4'));
+  // Seek Bar Coaching Flags state (synced to Cloudflare D1 across devices + cached in localStorage)
+  const [activeClipKey, setActiveClipKey] = useState<string>(initialPreset);
+  const activeClipKeyRef = useRef<string>(initialPreset);
+  const flagSyncGenRef = useRef<number>(0);
+  const [flags, setFlags] = useState<SeekFlag[]>(() => loadStoredFlags(initialPreset));
+  const [flagSyncState, setFlagSyncState] = useState<'synced' | 'saving' | 'offline'>('synced');
   const [flagEditorOpen, setFlagEditorOpen] = useState<boolean>(false);
   const [flagDraftLabel, setFlagDraftLabel] = useState<string>('');
   const [flagDraftColor, setFlagDraftColor] = useState<string>('#f43f5e');
@@ -225,6 +281,75 @@ export default function HowzatCoachAid({
     },
     [seekToFrameIndex],
   );
+
+  // Cloud-sync coaching flags for a clip with Cloudflare D1 + migrate any unsynced localStorage flags
+  const syncFlagsForClip = useCallback(async (clipKey: string, applyIfActive = true) => {
+    if (!clipKey) return;
+    const startGen = flagSyncGenRef.current;
+    try {
+      const res = await fetch(`/api/howzat/flags?clip=${encodeURIComponent(clipKey)}`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        if (applyIfActive && activeClipKeyRef.current === clipKey) {
+          setFlagSyncState('offline');
+        }
+        return;
+      }
+      const payload = (await res.json()) as { flags?: SeekFlag[] };
+      let serverFlags: SeekFlag[] = Array.isArray(payload.flags)
+        ? payload.flags.filter(
+            (f) => f && typeof f.frameIdx === 'number' && typeof f.label === 'string',
+          )
+        : [];
+
+      const localFlags = loadStoredFlags(clipKey);
+      const syncedIds = loadSyncedFlagIds(clipKey);
+
+      // Any local flag never yet pushed to cloud is automatically uploaded so pre-existing/offline flags are preserved
+      const unsyncedLocal = localFlags.filter(
+        (lf) =>
+          !syncedIds.has(lf.id) &&
+          !serverFlags.some((sf) => sf.id === lf.id || sf.frameIdx === lf.frameIdx),
+      );
+
+      if (unsyncedLocal.length > 0) {
+        const upRes = await fetch('/api/howzat/flags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clipKey, flags: unsyncedLocal }),
+        });
+        if (upRes.ok) {
+          const upPayload = (await upRes.json()) as { flags?: SeekFlag[] };
+          if (Array.isArray(upPayload.flags)) {
+            serverFlags = upPayload.flags;
+          }
+        } else {
+          // Keep unsynced local flags merged until server accepts them
+          serverFlags = [...serverFlags, ...unsyncedLocal];
+        }
+      }
+
+      const sorted = [...serverFlags].sort((a, b) => a.frameIdx - b.frameIdx);
+
+      // Only apply if no newer mutation occurred while our GET/POST was in flight
+      if (flagSyncGenRef.current === startGen) {
+        saveStoredFlags(clipKey, sorted);
+        saveSyncedFlagIds(
+          clipKey,
+          sorted.map((f) => f.id),
+        );
+        if (applyIfActive && activeClipKeyRef.current === clipKey) {
+          setFlags(sorted);
+          setFlagSyncState('synced');
+        }
+      }
+    } catch {
+      if (applyIfActive && activeClipKeyRef.current === clipKey) {
+        setFlagSyncState('offline');
+      }
+    }
+  }, []);
 
   // Unified loader for either URL (server-hosted video) or File/Blob
   const loadClipSource = useCallback(
@@ -395,9 +520,11 @@ export default function HowzatCoachAid({
         setCurTime(fs.times[firstShotFrame] ?? 0);
         setTelShapes([]);
         const clipStorageKey = idbKey || cacheKey || label;
+        activeClipKeyRef.current = clipStorageKey;
         setActiveClipKey(clipStorageKey);
         setFlags(loadStoredFlags(clipStorageKey));
         setFlagEditorOpen(false);
+        void syncFlagsForClip(clipStorageKey, true);
 
         // Background: decode audio only around shot windows to refine bat-on-ball contact timing
         if (!usingVirtual) {
@@ -438,14 +565,22 @@ export default function HowzatCoachAid({
         setBusyProgress(0);
       }
     },
-    [],
+    [syncFlagsForClip],
   );
 
-  // Load a preset from HOWZAT_DEMO_PRESETS
+  // Load a preset from HOWZAT_DEMO_PRESETS (persists active clip across refresh & URL sharing)
   const loadPreset = useCallback(
     async (id: string) => {
       const preset = HOWZAT_DEMO_PRESETS.find((p) => p.id === id) || HOWZAT_DEMO_PRESETS[0];
       setPresetId(preset.id);
+      try {
+        localStorage.setItem('howzat:lastPresetId', preset.id);
+        const url = new URL(window.location.href);
+        url.searchParams.set('clip', preset.id);
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      } catch {
+        // ignore URL / storage restrictions
+      }
       if (preset.videoUrl) {
         await loadClipSource(preset.videoUrl, {
           label: preset.label,
@@ -466,11 +601,32 @@ export default function HowzatCoachAid({
   );
 
   useEffect(() => {
-    void loadPreset('IMG_8141.MP4');
+    void loadPreset(initialPreset);
+    // Also background-migrate any pre-existing localStorage flags across other preset clips to D1
+    for (const p of HOWZAT_DEMO_PRESETS) {
+      if (p.cacheKey !== initialPreset && loadStoredFlags(p.cacheKey).length > 0) {
+        void syncFlagsForClip(p.cacheKey, false);
+      }
+    }
     return () => {
       frameSourceRef.current?.closeAll();
     };
-  }, [loadPreset]);
+  }, [initialPreset, loadPreset, syncFlagsForClip]);
+
+  // Re-sync flags automatically when switching back to this tab or unlocking another device
+  useEffect(() => {
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'hidden') return;
+      const key = activeClipKeyRef.current;
+      if (key) void syncFlagsForClip(key, true);
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    return () => {
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
+  }, [syncFlagsForClip]);
 
   // Re-run two-pass tight-crop HD AI pose tracking on the currently loaded real video
   const handleRetrackHd = useCallback(async () => {
@@ -787,7 +943,7 @@ export default function HowzatCoachAid({
     });
     const flagsByFrame = new Map<number, SeekFlag>();
     for (const fl of flags) {
-      flagsByFrame.set(fl.frameIdx, fl);
+      flagsByFrame.set(resolveFlagFrame(fl, fs), fl);
     }
 
     const half = Math.ceil(cx / px) + 1;
@@ -905,60 +1061,161 @@ export default function HowzatCoachAid({
     [curFrameIdx, seekToFrameIndex],
   );
 
-  // Seek Bar Flagging helpers
-  const currentFrameFlag = useMemo(
-    () => flags.find((f) => f.frameIdx === curFrameIdx) ?? null,
-    [flags, curFrameIdx],
-  );
+  // Seek Bar Flagging helpers (instant localStorage + live Cloudflare D1 cross-device persistence)
+  const flagsRef = useRef<SeekFlag[]>(flags);
+  useEffect(() => {
+    flagsRef.current = flags;
+  }, [flags]);
 
-  const persistFlags = useCallback(
-    (updater: (prev: SeekFlag[]) => SeekFlag[]) => {
-      setFlags((prev) => {
-        const next = updater(prev).sort((a, b) => a.frameIdx - b.frameIdx);
-        saveStoredFlags(activeClipKey, next);
-        return next;
-      });
-    },
-    [activeClipKey],
-  );
+  const currentFrameFlag = useMemo(() => {
+    const fs = frameSourceRef.current;
+    return flags.find((f) => resolveFlagFrame(f, fs) === curFrameIdx) ?? null;
+  }, [flags, curFrameIdx]);
 
   const upsertFlagAtCurrentFrame = useCallback(
     (label: string, color: string) => {
+      const clipKey = activeClipKeyRef.current || activeClipKey;
+      const fs = frameSourceRef.current;
       const cleanLabel = label.trim() || 'Flag';
-      persistFlags((prev) => {
-        const existing = prev.find((f) => f.frameIdx === curFrameIdx);
-        if (existing) {
-          return prev.map((f) =>
-            f.frameIdx === curFrameIdx
-              ? { ...f, label: cleanLabel, color, time: curTime }
-              : f,
-          );
-        }
-        return [
-          ...prev,
-          {
+      const prev = flagsRef.current;
+      const existing = prev.find((f) => resolveFlagFrame(f, fs) === curFrameIdx);
+      const targetFlag: SeekFlag = existing
+        ? { ...existing, frameIdx: curFrameIdx, time: curTime, label: cleanLabel, color }
+        : {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             frameIdx: curFrameIdx,
             time: curTime,
             label: cleanLabel,
             color,
-          },
-        ];
-      });
+          };
+
+      const next = (
+        existing
+          ? prev.map((f) => (f.id === existing.id ? targetFlag : f))
+          : [...prev, targetFlag]
+      ).sort((a, b) => a.frameIdx - b.frameIdx);
+
+      flagsRef.current = next;
+      setFlags(next);
+      saveStoredFlags(clipKey, next);
+
+      const gen = ++flagSyncGenRef.current;
+      setFlagSyncState('saving');
+      void (async () => {
+        try {
+          const res = await fetch('/api/howzat/flags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clipKey, flag: targetFlag }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const payload = (await res.json()) as { flags?: SeekFlag[] };
+          const syncedIds = loadSyncedFlagIds(clipKey);
+          syncedIds.add(targetFlag.id);
+          if (gen === flagSyncGenRef.current && Array.isArray(payload.flags)) {
+            const serverSorted = [...payload.flags].sort((a, b) => a.frameIdx - b.frameIdx);
+            saveStoredFlags(clipKey, serverSorted);
+            saveSyncedFlagIds(
+              clipKey,
+              serverSorted.map((f) => f.id),
+            );
+            if (activeClipKeyRef.current === clipKey) {
+              flagsRef.current = serverSorted;
+              setFlags(serverSorted);
+              setFlagSyncState('synced');
+            }
+          } else {
+            saveSyncedFlagIds(clipKey, syncedIds);
+            if (activeClipKeyRef.current === clipKey && gen === flagSyncGenRef.current) {
+              setFlagSyncState('synced');
+            }
+          }
+        } catch {
+          if (activeClipKeyRef.current === clipKey) {
+            setFlagSyncState('offline');
+          }
+        }
+      })();
     },
-    [curFrameIdx, curTime, persistFlags],
+    [activeClipKey, curFrameIdx, curTime],
   );
 
   const removeFlagById = useCallback(
     (id: string) => {
-      persistFlags((prev) => prev.filter((f) => f.id !== id));
+      const clipKey = activeClipKeyRef.current || activeClipKey;
+      const next = flagsRef.current.filter((f) => f.id !== id);
+      flagsRef.current = next;
+      setFlags(next);
+      saveStoredFlags(clipKey, next);
+      const syncedIds = loadSyncedFlagIds(clipKey);
+      syncedIds.delete(id);
+      saveSyncedFlagIds(clipKey, syncedIds);
+
+      const gen = ++flagSyncGenRef.current;
+      setFlagSyncState('saving');
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/howzat/flags?clip=${encodeURIComponent(clipKey)}&id=${encodeURIComponent(id)}`,
+            { method: 'DELETE' },
+          );
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const payload = (await res.json()) as { flags?: SeekFlag[] };
+          if (gen === flagSyncGenRef.current && Array.isArray(payload.flags)) {
+            const serverSorted = [...payload.flags].sort((a, b) => a.frameIdx - b.frameIdx);
+            saveStoredFlags(clipKey, serverSorted);
+            saveSyncedFlagIds(
+              clipKey,
+              serverSorted.map((f) => f.id),
+            );
+            if (activeClipKeyRef.current === clipKey) {
+              flagsRef.current = serverSorted;
+              setFlags(serverSorted);
+              setFlagSyncState('synced');
+            }
+          }
+        } catch {
+          if (activeClipKeyRef.current === clipKey) {
+            setFlagSyncState('offline');
+          }
+        }
+      })();
     },
-    [persistFlags],
+    [activeClipKey],
   );
+
+  const clearAllFlags = useCallback(() => {
+    if (!window.confirm('Remove all flags on this clip across all devices?')) return;
+    const clipKey = activeClipKeyRef.current || activeClipKey;
+    flagsRef.current = [];
+    setFlags([]);
+    saveStoredFlags(clipKey, []);
+    saveSyncedFlagIds(clipKey, []);
+
+    const gen = ++flagSyncGenRef.current;
+    setFlagSyncState('saving');
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/howzat/flags?clip=${encodeURIComponent(clipKey)}&all=1`,
+          { method: 'DELETE' },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (gen === flagSyncGenRef.current && activeClipKeyRef.current === clipKey) {
+          setFlagSyncState('synced');
+        }
+      } catch {
+        if (activeClipKeyRef.current === clipKey) {
+          setFlagSyncState('offline');
+        }
+      }
+    })();
+  }, [activeClipKey]);
 
   const triggerFlagComposer = useCallback(() => {
     setPlaying(false);
-    const existing = flags.find((f) => f.frameIdx === curFrameIdx);
+    const fs = frameSourceRef.current;
+    const existing = flagsRef.current.find((f) => resolveFlagFrame(f, fs) === curFrameIdx);
     if (existing) {
       setFlagDraftLabel(existing.label);
       setFlagDraftColor(existing.color);
@@ -972,20 +1229,24 @@ export default function HowzatCoachAid({
       flagInputRef.current?.focus();
       flagInputRef.current?.select();
     }, 20);
-  }, [flags, curFrameIdx, upsertFlagAtCurrentFrame]);
+  }, [curFrameIdx, upsertFlagAtCurrentFrame]);
 
   const jumpToAdjacentFlag = useCallback(
     (dir: -1 | 1) => {
       if (!flags.length) return;
       setPlaying(false);
+      const fs = frameSourceRef.current;
+      const mapped = flags
+        .map((fl) => ({ fl, idx: resolveFlagFrame(fl, fs) }))
+        .sort((a, b) => a.idx - b.idx);
       if (dir < 0) {
-        const prev = [...flags].reverse().find((f) => f.frameIdx < curFrameIdx);
-        const target = prev ?? flags[flags.length - 1];
-        void seekToFrameIndex(target.frameIdx);
+        const prev = [...mapped].reverse().find((m) => m.idx < curFrameIdx);
+        const target = prev ?? mapped[mapped.length - 1];
+        void seekToFrameIndex(target.idx);
       } else {
-        const next = flags.find((f) => f.frameIdx > curFrameIdx);
-        const target = next ?? flags[0];
-        void seekToFrameIndex(target.frameIdx);
+        const next = mapped.find((m) => m.idx > curFrameIdx);
+        const target = next ?? mapped[0];
+        void seekToFrameIndex(target.idx);
       }
     },
     [flags, curFrameIdx, seekToFrameIndex],
@@ -1533,11 +1794,36 @@ export default function HowzatCoachAid({
             {/* Saved Coaching Flags Pill Strip (jump straight to any flagged frame across the clip) */}
             {flags.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-0.5">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                   Flags:
                 </span>
+                <span
+                  title={
+                    flagSyncState === 'synced'
+                      ? 'Synced to cloud — visible after refresh and across all devices'
+                      : flagSyncState === 'saving'
+                        ? 'Saving flag to cloud...'
+                        : 'Saved locally on this browser — will sync when online'
+                  }
+                  className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-bold mr-0.5 ${
+                    flagSyncState === 'synced'
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                      : flagSyncState === 'saving'
+                        ? 'border-sky-400/30 bg-sky-400/10 text-sky-300'
+                        : 'border-amber-400/30 bg-amber-400/10 text-amber-300'
+                  }`}
+                >
+                  <span>
+                    {flagSyncState === 'synced'
+                      ? '☁ Saved'
+                      : flagSyncState === 'saving'
+                        ? '☁ Saving…'
+                        : '⚡ Local'}
+                  </span>
+                </span>
                 {flags.map((fl) => {
-                  const isAtFlag = Math.abs(curFrameIdx - fl.frameIdx) <= 0;
+                  const targetIdx = resolveFlagFrame(fl, frameSourceRef.current);
+                  const isAtFlag = Math.abs(curFrameIdx - targetIdx) <= 0;
                   return (
                     <div
                       key={fl.id}
@@ -1554,16 +1840,16 @@ export default function HowzatCoachAid({
                         type="button"
                         onClick={() => {
                           setPlaying(false);
-                          void seekToFrameIndex(fl.frameIdx);
+                          void seekToFrameIndex(resolveFlagFrame(fl, frameSourceRef.current));
                         }}
                         onDoubleClick={() => {
                           setPlaying(false);
-                          void seekToFrameIndex(fl.frameIdx);
+                          void seekToFrameIndex(resolveFlagFrame(fl, frameSourceRef.current));
                           setFlagDraftLabel(fl.label);
                           setFlagDraftColor(fl.color);
                           setFlagEditorOpen(true);
                         }}
-                        title={`Jump to Frame ${fl.frameIdx + 1} (${formatFlagTime(fl.time)}) — double-click to edit`}
+                        title={`Jump to Frame ${targetIdx + 1} (${formatFlagTime(fl.time)}) — double-click to edit`}
                         className="inline-flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 text-left"
                       >
                         <span
@@ -1592,7 +1878,7 @@ export default function HowzatCoachAid({
                 {flags.length >= 2 && (
                   <button
                     type="button"
-                    onClick={() => persistFlags(() => [])}
+                    onClick={clearAllFlags}
                     className="ml-auto text-[10px] font-bold text-slate-500 hover:text-rose-300 transition px-1.5 py-0.5"
                   >
                     Clear flags
